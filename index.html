@@ -346,12 +346,16 @@
     box-shadow:0 0 12px rgba(168,95,48,.35);
   }
 
+  .reader-body{display:flex; flex:1; min-height:0; position:relative;}
+  .reader-main{flex:1; min-width:0; display:flex; flex-direction:column; position:relative;}
+
   .drawer{
     position:absolute; top:0; left:0; height:100%; width:min(300px, 82vw);
     background:var(--surface); z-index:55; transform:translateX(-100%); transition:transform .28s var(--ease);
-    display:flex; flex-direction:column; box-shadow:2px 0 30px rgba(63,58,52,0.18); border-right:1px solid var(--line);
+    box-shadow:2px 0 30px rgba(63,58,52,0.18); border-right:1px solid var(--line); overflow:hidden;
   }
   .drawer.show{transform:translateX(0);}
+  .drawer-inner{display:flex; flex-direction:column; height:100%; width:100%;}
   .drawer-head{padding:20px 18px 14px; border-bottom:1px solid var(--line);}
   .drawer-head .k{font-size:10.5px; text-transform:uppercase; letter-spacing:.12em; color:var(--text-400); font-weight:600;}
   .drawer-head .book-title{font-family:var(--display-font); font-weight:600; font-size:17px; margin-top:5px; color:var(--text-900); letter-spacing:-.01em;}
@@ -364,7 +368,7 @@
   @media (hover:hover) and (pointer:fine){ .toc-item:not(.active):hover{background:var(--bg-sunken);} }
 
   .pop{
-    position:absolute; top:52px; right:10px; z-index:55;
+    position:absolute; top:8px; right:10px; z-index:55;
     background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg); padding:18px; width:226px;
     box-shadow:var(--shadow-lg); opacity:0; transform:translateY(-6px) scale(.98); pointer-events:none; transition:all .15s var(--ease);
   }
@@ -411,12 +415,40 @@
     .rail-row{flex-direction:column; overflow-x:visible; white-space:normal;}
     .rail-crumbs{flex-wrap:wrap; overflow-x:visible; white-space:normal;}
     .folder-chip{justify-content:flex-start; border-radius:var(--r-sm);}
-    .lib-main{padding:24px 32px 100px;}
-    .read-inner{padding-top:60px;}
+    .lib-main{padding:26px 34px 100px;}
     .lib-search-bar{flex-direction:row; align-items:center; padding:12px 20px;}
     .search-row{flex:1;}
     .controls-row{flex:0 0 auto;}
     .sort-select{flex:0 0 auto;}
+
+    /* tablet/desktop library cards get a little more breathing room */
+    .file-card{padding:16px;}
+    .file-card .doc-icon{width:42px; height:42px; border-radius:var(--r-md);}
+    .file-card .name{font-size:15.5px;}
+
+    /* reader: TOC becomes a persistent, collapsible side panel instead of a
+       full-screen overlay drawer — width animates so opening/closing reads
+       as a natural slide rather than a snap. drawer-inner keeps a fixed
+       width so its content doesn't reflow mid-transition, just reveals. */
+    .drawer{
+      position:relative; top:auto; left:auto; height:auto; width:0;
+      transform:none; flex:0 0 auto; box-shadow:none;
+      transition:width .32s var(--ease);
+    }
+    .drawer.show{width:300px;}
+    .drawer-inner{width:300px;}
+
+    /* settings/ink toolbars sit at the top of the reading column (not the
+       whole screen) now that the TOC can occupy the left edge, and get
+       roomier touch targets for stylus/finger use */
+    .read-inner{padding-top:52px; max-width:min(720px, 88vw);}
+    .pop{width:288px; padding:22px;}
+    .ink-row{gap:12px;}
+    .ink-swatch{width:38px; height:38px;}
+    .ink-swatch.ink-highlighter{width:46px; height:28px;}
+    .ink-size-btn{height:40px;}
+    .font-row button{width:38px; height:38px;}
+    .theme-swatch{height:52px;}
   }
   @media (min-width:960px){
     .lib-main{padding:28px 40px 100px;}
@@ -502,72 +534,78 @@
       <button class="icon-btn aa-btn" id="settingsBtn" aria-label="설정">Aa</button>
     </div>
 
-    <div class="read-scroll" id="readScroll">
-      <div class="read-inner" id="readInner"></div>
-    </div>
+    <div class="reader-body" id="readerBody">
+      <div class="drawer" id="drawer">
+        <div class="drawer-inner">
+          <div class="drawer-head">
+            <div class="k">목차</div>
+            <div class="book-title" id="drawerTitle">제목</div>
+          </div>
+          <div class="toc-list" id="tocList"></div>
+        </div>
+      </div>
 
-    <div class="chapternav">
-      <button class="navbtn" id="prevBtn">이전</button>
-      <div class="chapter-indicator" id="chapterIndicator">1 / 1</div>
-      <button class="navbtn" id="nextBtn">다음</button>
-    </div>
+      <div class="reader-main">
+        <div class="read-scroll" id="readScroll">
+          <div class="read-inner" id="readInner"></div>
+        </div>
 
-    <div class="ribbon-track"><div class="ribbon-fill" id="ribbonFill"></div></div>
+        <div class="chapternav">
+          <button class="navbtn" id="prevBtn">이전</button>
+          <div class="chapter-indicator" id="chapterIndicator">1 / 1</div>
+          <button class="navbtn" id="nextBtn">다음</button>
+        </div>
 
-    <div class="pop" id="settingsPop">
-      <h5>글자 크기</h5>
-      <div class="font-row">
-        <button id="fontMinus" aria-label="글자 작게">–</button>
-        <span class="val" id="fontVal">18px</span>
-        <button id="fontPlus" aria-label="글자 크게">+</button>
-      </div>
-      <h5>테마</h5>
-      <div class="theme-row">
-        <button class="theme-swatch sw-light" data-theme-choice="light">밝게</button>
-        <button class="theme-swatch sw-sepia" data-theme-choice="sepia">세피아</button>
-        <button class="theme-swatch sw-night" data-theme-choice="night">야간</button>
-      </div>
-    </div>
+        <div class="ribbon-track"><div class="ribbon-fill" id="ribbonFill"></div></div>
 
-    <div class="pop ink-pop" id="inkPop">
-      <h5>펜</h5>
-      <div class="ink-row">
-        <button class="ink-swatch active" data-ink-color="#3F3A34" style="--sw:#3F3A34" aria-label="검정 펜"></button>
-        <button class="ink-swatch" data-ink-color="#C97A45" style="--sw:#C97A45" aria-label="주황 펜"></button>
-        <button class="ink-swatch" data-ink-color="#7C8FA6" style="--sw:#7C8FA6" aria-label="파랑 펜"></button>
-        <button class="ink-swatch" data-ink-color="#B4574E" style="--sw:#B4574E" aria-label="빨강 펜"></button>
-        <button class="ink-swatch ink-eraser" id="inkEraserBtn" aria-label="지우개">
-          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20H8l-5-5a2 2 0 0 1 0-2.8l9-9a2 2 0 0 1 2.8 0l5.2 5.2a2 2 0 0 1 0 2.8L13 18"/></svg>
-        </button>
-      </div>
-      <h5>형광펜</h5>
-      <div class="ink-row">
-        <button class="ink-swatch ink-highlighter" data-ink-highlight="#F4C84A" style="--sw:#F4C84A" aria-label="노랑 형광펜"></button>
-        <button class="ink-swatch ink-highlighter" data-ink-highlight="#8FCB8A" style="--sw:#8FCB8A" aria-label="초록 형광펜"></button>
-        <button class="ink-swatch ink-highlighter" data-ink-highlight="#EE9DBB" style="--sw:#EE9DBB" aria-label="분홍 형광펜"></button>
-        <button class="ink-swatch ink-highlighter" data-ink-highlight="#8FB6E3" style="--sw:#8FB6E3" aria-label="파랑 형광펜"></button>
-      </div>
-      <h5>굵기</h5>
-      <div class="ink-size-row">
-        <button class="ink-size-btn" data-ink-size="2.5"><span class="dot" style="width:6px;height:6px;"></span></button>
-        <button class="ink-size-btn active" data-ink-size="4.5"><span class="dot" style="width:10px;height:10px;"></span></button>
-        <button class="ink-size-btn" data-ink-size="8"><span class="dot" style="width:15px;height:15px;"></span></button>
-      </div>
-      <div class="ink-actions-row">
-        <button class="btn btn-ghost" id="inkUndoBtn" disabled>
-          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5A5.5 5.5 0 0 1 20 14.5v0A5.5 5.5 0 0 1 14.5 20H11"/></svg>
-          되돌리기
-        </button>
-        <button class="btn btn-ghost" id="inkClearBtn">전체 지우기</button>
-      </div>
-    </div>
+        <div class="pop" id="settingsPop">
+          <h5>글자 크기</h5>
+          <div class="font-row">
+            <button id="fontMinus" aria-label="글자 작게">–</button>
+            <span class="val" id="fontVal">18px</span>
+            <button id="fontPlus" aria-label="글자 크게">+</button>
+          </div>
+          <h5>테마</h5>
+          <div class="theme-row">
+            <button class="theme-swatch sw-light" data-theme-choice="light">밝게</button>
+            <button class="theme-swatch sw-sepia" data-theme-choice="sepia">세피아</button>
+            <button class="theme-swatch sw-night" data-theme-choice="night">야간</button>
+          </div>
+        </div>
 
-    <div class="drawer" id="drawer">
-      <div class="drawer-head">
-        <div class="k">목차</div>
-        <div class="book-title" id="drawerTitle">제목</div>
+        <div class="pop ink-pop" id="inkPop">
+          <h5>펜</h5>
+          <div class="ink-row">
+            <button class="ink-swatch active" data-ink-color="#3F3A34" style="--sw:#3F3A34" aria-label="검정 펜"></button>
+            <button class="ink-swatch" data-ink-color="#C97A45" style="--sw:#C97A45" aria-label="주황 펜"></button>
+            <button class="ink-swatch" data-ink-color="#7C8FA6" style="--sw:#7C8FA6" aria-label="파랑 펜"></button>
+            <button class="ink-swatch" data-ink-color="#B4574E" style="--sw:#B4574E" aria-label="빨강 펜"></button>
+            <button class="ink-swatch ink-eraser" id="inkEraserBtn" aria-label="지우개">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20H8l-5-5a2 2 0 0 1 0-2.8l9-9a2 2 0 0 1 2.8 0l5.2 5.2a2 2 0 0 1 0 2.8L13 18"/></svg>
+            </button>
+          </div>
+          <h5>형광펜</h5>
+          <div class="ink-row">
+            <button class="ink-swatch ink-highlighter" data-ink-highlight="#F4C84A" style="--sw:#F4C84A" aria-label="노랑 형광펜"></button>
+            <button class="ink-swatch ink-highlighter" data-ink-highlight="#8FCB8A" style="--sw:#8FCB8A" aria-label="초록 형광펜"></button>
+            <button class="ink-swatch ink-highlighter" data-ink-highlight="#EE9DBB" style="--sw:#EE9DBB" aria-label="분홍 형광펜"></button>
+            <button class="ink-swatch ink-highlighter" data-ink-highlight="#8FB6E3" style="--sw:#8FB6E3" aria-label="파랑 형광펜"></button>
+          </div>
+          <h5>굵기</h5>
+          <div class="ink-size-row">
+            <button class="ink-size-btn" data-ink-size="2.5"><span class="dot" style="width:6px;height:6px;"></span></button>
+            <button class="ink-size-btn active" data-ink-size="4.5"><span class="dot" style="width:10px;height:10px;"></span></button>
+            <button class="ink-size-btn" data-ink-size="8"><span class="dot" style="width:15px;height:15px;"></span></button>
+          </div>
+          <div class="ink-actions-row">
+            <button class="btn btn-ghost" id="inkUndoBtn" disabled>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5A5.5 5.5 0 0 1 20 14.5v0A5.5 5.5 0 0 1 14.5 20H11"/></svg>
+              되돌리기
+            </button>
+            <button class="btn btn-ghost" id="inkClearBtn">전체 지우기</button>
+          </div>
+        </div>
       </div>
-      <div class="toc-list" id="tocList"></div>
     </div>
   </section>
 
@@ -1146,6 +1184,9 @@
     libraryScreen.classList.add("hidden");
     readerScreen.classList.remove("hidden");
     setPenMode(false);
+    // tablet+: TOC panel defaults open (it's a side panel, not an overlay);
+    // phones keep the drawer closed until the user taps the toc button
+    if(isTabletUp()) openDrawer(); else closeDrawer();
     renderChapter((f.progress && f.progress.chapterIdx) || 0);
   }
 
@@ -1244,9 +1285,16 @@
     touchX = null; touchY = null;
   }, {passive:true});
 
-  function openDrawer(){ drawer.classList.add("show"); $("overlay").classList.add("show"); }
-  function closeDrawer(){ drawer.classList.remove("show"); $("overlay").classList.remove("show"); }
-  $("tocBtn").addEventListener("click", ()=>{ buildTOC(); openDrawer(); });
+  // At tablet width+ the TOC is an in-flow side panel, not an overlay, so it
+  // doesn't need the dimming #overlay (and shouldn't block taps on the reader
+  // behind it — there is no "behind" once it's part of the layout).
+  function isTabletUp(){ return window.innerWidth >= 720; }
+  function openDrawer(){ drawer.classList.add("show"); if(!isTabletUp()) $("overlay").classList.add("show"); }
+  function closeDrawer(){ drawer.classList.remove("show"); if(!isTabletUp()) $("overlay").classList.remove("show"); }
+  $("tocBtn").addEventListener("click", ()=>{
+    buildTOC();
+    if(drawer.classList.contains("show")) closeDrawer(); else openDrawer();
+  });
   $("overlay").addEventListener("click", ()=>{ closeDrawer(); closeSettings(); closeInkPop(); });
 
   function openSettings(){ settingsPop.classList.add("show"); $("overlay").classList.add("show"); }
@@ -1561,6 +1609,12 @@
   window.addEventListener("resize", ()=>{
     if(readerScreenVisible()) resizeInkCanvas();
   });
+  // tablet: the TOC panel's width animates (open/close), which reflows how
+  // much room the reading column actually has — resync the ink canvas once
+  // that animation settles rather than mid-transition.
+  drawer.addEventListener("transitionend", (e)=>{
+    if(e.propertyName === "width" && readerScreenVisible()) resizeInkCanvas();
+  });
 
   /* ---------------- PWA: service worker registration ---------------- */
   // GitHub Pages serves sw.js with Cache-Control: max-age=600, so a plain
@@ -1569,7 +1623,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "10";
+  const SW_VERSION = "11";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
