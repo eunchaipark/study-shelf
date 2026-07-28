@@ -1,0 +1,1321 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Study Shelf</title>
+<meta name="description" content="업로드한 마크다운 파일을 챕터 단위로 넘겨 읽는 개인 서재 앱">
+
+<!-- PWA -->
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#F7F5F2">
+<meta name="color-scheme" content="light">
+<link rel="icon" href="./icons/icon-32.png" type="image/png">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Study Shelf">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&family=Noto+Serif+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="./vendor/marked.min.js"></script>
+<style>
+  :root{
+    --bg-app:#F7F5F2;
+    --bg-sunken:#F1ECE5;
+    --bg-sunken-2:#E9E0D2;
+    --surface:#FFFFFF;
+    --line:#EAE3DA;
+    --line-strong:#DCD1C0;
+    --text-900:#3F3A34;
+    --text-700:#57524D;
+    --text-500:#8B8177;
+    --text-400:#B6ABA0;
+    --accent-300:#E3A576;
+    --accent-400:#C97A45;
+    --accent-500:#A85F30;
+    --accent-wash:rgba(201,122,69,0.12);
+    --danger:#DB7C72;
+    --danger-wash:rgba(219,124,114,0.12);
+
+    --ui-font:'Noto Sans KR', sans-serif;
+    --display-font:'Space Grotesk', 'Noto Sans KR', sans-serif;
+    --read-font:'Noto Serif KR', serif;
+    --read-size:18px;
+
+    --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px; --sp-6:28px; --sp-7:40px;
+    --r-sm:8px; --r-md:12px; --r-lg:16px; --r-xl:20px;
+    --ease:cubic-bezier(.22,.61,.36,1);
+    --shadow-sm:0 1px 2px rgba(63,58,52,.08);
+    --shadow-md:0 8px 24px rgba(63,58,52,.10);
+    --shadow-lg:0 20px 50px rgba(63,58,52,.18);
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;}
+  body{
+    margin:0; font-family:var(--ui-font); background:var(--bg-app); color:var(--text-700); overflow:hidden;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  button{font-family:inherit; cursor:pointer;}
+  input{font-family:inherit;}
+  ::selection{background:var(--accent-400); color:#fff9f4;}
+  svg{display:block;}
+  .icon{width:18px; height:18px; flex:0 0 auto;}
+
+  :focus-visible{outline:2px solid var(--accent-400); outline-offset:2px; border-radius:6px;}
+
+  /* thin scrollbars for desktop */
+  .lib-main, .read-scroll, .toc-list, .rail-row{scrollbar-width:thin; scrollbar-color:var(--line-strong) transparent;}
+  .lib-main::-webkit-scrollbar, .toc-list::-webkit-scrollbar, .rail-row::-webkit-scrollbar{width:7px; height:7px;}
+  .lib-main::-webkit-scrollbar-thumb, .toc-list::-webkit-scrollbar-thumb, .rail-row::-webkit-scrollbar-thumb{background:var(--line-strong); border-radius:99px;}
+  .lib-main::-webkit-scrollbar-track, .toc-list::-webkit-scrollbar-track, .rail-row::-webkit-scrollbar-track{background:transparent;}
+
+  #app{position:fixed; inset:0; display:flex; flex-direction:column;}
+  .screen{position:absolute; inset:0; display:flex; flex-direction:column;}
+  .hidden{display:none !important;}
+
+  /* ============ LIBRARY SCREEN ============ */
+  #libraryScreen{background:var(--bg-app);}
+
+  .lib-topbar{
+    display:flex; align-items:center; gap:var(--sp-3);
+    padding:var(--sp-4) var(--sp-5); padding-top:calc(var(--sp-4) + env(safe-area-inset-top));
+    border-bottom:1px solid var(--line);
+    flex:0 0 auto; background:var(--surface);
+  }
+  .lib-brand{font-family:var(--ui-font); font-weight:800; font-size:14px; letter-spacing:.05em; color:var(--accent-500); text-transform:uppercase; line-height:1.15; white-space:nowrap;}
+  .lib-spacer{flex:1;}
+  .btn{
+    display:inline-flex; align-items:center; gap:var(--sp-2); border:none; border-radius:var(--r-sm);
+    font-size:13px; font-weight:600; padding:10px 15px; white-space:nowrap;
+    transition:background-color .15s var(--ease), border-color .15s var(--ease), transform .15s var(--ease), box-shadow .15s var(--ease);
+  }
+  .btn-primary{background:var(--accent-400); color:#fffaf6; box-shadow:var(--shadow-sm);}
+  .btn-primary:active{background:var(--accent-500); transform:translateY(1px); box-shadow:none;}
+  .btn-ghost{background:var(--surface); color:var(--text-700); border:1px solid var(--line-strong);}
+  .btn-ghost:active{background:var(--bg-sunken); transform:translateY(1px);}
+  @media (hover:hover) and (pointer:fine){
+    .btn-primary:hover{background:#BD703E; box-shadow:0 4px 14px rgba(201,122,69,.28);}
+    .btn-ghost:hover{border-color:var(--text-400); background:var(--bg-sunken);}
+  }
+
+  .lib-body{flex:1; display:flex; flex-direction:column; min-height:0; position:relative;}
+
+  .folder-rail{
+    flex:0 0 auto; display:flex; flex-direction:column; gap:10px;
+    padding:var(--sp-3) var(--sp-4); border-bottom:1px solid var(--line);
+    background:var(--surface);
+  }
+  .rail-row{display:flex; gap:8px; overflow-x:auto; overflow-y:hidden; white-space:nowrap; -webkit-overflow-scrolling:touch;}
+  .rail-crumbs{display:flex; align-items:center; gap:3px; overflow-x:auto; white-space:nowrap; -webkit-overflow-scrolling:touch;}
+  .crumb-item{background:none; border:none; padding:3px 3px; font-size:12px; font-weight:600; color:var(--text-500); border-radius:6px; flex:0 0 auto; transition:color .15s var(--ease);}
+  .crumb-item.active{color:var(--text-900);}
+  .crumb-sep{color:var(--text-400); font-size:11px; flex:0 0 auto;}
+  @media (hover:hover) and (pointer:fine){ .crumb-item:not(.active):hover{color:var(--text-700);} }
+
+  .folder-chip{
+    display:inline-flex; align-items:center; gap:7px;
+    background:var(--bg-sunken); border:1px solid transparent; color:var(--text-500);
+    border-radius:var(--r-sm); padding:8px 14px; font-size:13px; font-weight:600; flex:0 0 auto;
+    transition:background-color .15s var(--ease), border-color .15s var(--ease), color .15s var(--ease);
+  }
+  .folder-chip .count{color:var(--text-400); font-weight:500; font-variant-numeric:tabular-nums;}
+  .folder-chip.active{background:var(--accent-400); border-color:var(--accent-400); color:#fffaf6;}
+  .folder-chip.active .count{color:rgba(255,250,246,.7);}
+  .folder-chip.new{color:var(--accent-500); background:transparent; border-style:dashed; border-color:var(--line-strong);}
+  @media (hover:hover) and (pointer:fine){
+    .folder-chip:not(.active):hover{border-color:var(--line-strong); color:var(--text-900); background:var(--bg-sunken-2);}
+  }
+
+  .lib-main{flex:1; overflow-y:auto; padding:var(--sp-4) var(--sp-4) 100px;}
+
+  .empty-state{
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    text-align:center; padding:70px 20px; color:var(--text-500); gap:var(--sp-2); max-width:340px; margin:0 auto;
+  }
+  .empty-state .icon-lg{width:38px; height:38px; color:var(--line-strong); margin-bottom:8px;}
+  .empty-state strong{color:var(--text-900); font-size:15px; font-weight:600; letter-spacing:-.01em;}
+  .empty-state span{font-size:13px; line-height:1.55; color:var(--text-500);}
+  .empty-state--sub{padding:36px 20px; color:var(--text-400); font-size:13px; max-width:280px;}
+
+  .file-grid{display:flex; flex-direction:column; gap:var(--sp-3);}
+
+  .file-card{
+    display:flex; align-items:center; gap:var(--sp-3);
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);
+    padding:var(--sp-3); position:relative; box-shadow:var(--shadow-sm);
+    transition:border-color .15s var(--ease), transform .15s var(--ease), box-shadow .15s var(--ease);
+  }
+  @media (hover:hover) and (pointer:fine){
+    .file-card:hover{border-color:var(--line-strong); box-shadow:var(--shadow-md); transform:translateY(-1px);}
+  }
+  .file-card .doc-icon{
+    width:38px; height:38px; border-radius:var(--r-sm); background:var(--bg-sunken); color:var(--accent-500);
+    display:flex; align-items:center; justify-content:center; flex:0 0 auto; border:1px solid var(--line);
+  }
+  .file-card .info{flex:1; min-width:0;}
+  .file-card .name{font-size:14.5px; font-weight:600; color:var(--text-900); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; letter-spacing:-.005em;}
+  .file-card .meta{font-size:12px; color:var(--text-500); margin-top:4px; display:flex; align-items:center; gap:7px; flex-wrap:wrap;}
+  .file-card .meta .tag{background:var(--bg-sunken); color:var(--text-500); padding:2.5px 9px; border-radius:999px; font-size:10.5px; font-weight:600; letter-spacing:.01em;}
+  .file-card .meta .dot{width:3px; height:3px; border-radius:50%; background:var(--text-400); flex:0 0 auto;}
+  .file-card .progress-bar{height:4px; border-radius:99px; background:var(--bg-sunken); margin-top:10px; overflow:hidden;}
+  .file-card .progress-bar i{display:block; height:100%; background:linear-gradient(90deg, var(--accent-500), var(--accent-300)); border-radius:99px;}
+  .file-card .more-btn{
+    width:32px; height:32px; border-radius:var(--r-sm); background:transparent; border:none; color:var(--text-500);
+    display:flex; align-items:center; justify-content:center; flex:0 0 auto; transition:background-color .15s var(--ease), color .15s var(--ease);
+  }
+  .file-card .more-btn:active{background:var(--bg-sunken);}
+  @media (hover:hover) and (pointer:fine){ .file-card .more-btn:hover{background:var(--bg-sunken); color:var(--text-900);} }
+  .file-card .hit{position:absolute; inset:0; right:44px; background:transparent; border:none;}
+
+  .drag-overlay{
+    position:absolute; inset:0; z-index:40; display:none; align-items:center; justify-content:center;
+    background:rgba(247,245,242,0.94); border:2px dashed var(--accent-400); margin:10px; border-radius:var(--r-lg);
+    backdrop-filter:blur(3px);
+  }
+  .drag-overlay.show{display:flex;}
+  .drag-overlay .msg{text-align:center; color:var(--accent-500); font-size:15px; font-weight:600;}
+
+  #fileInput{display:none;}
+
+  /* ============ Popovers / Modals (shared) ============ */
+  .overlay{position:absolute; inset:0; background:rgba(63,58,52,0.28); backdrop-filter:blur(2px); z-index:50; opacity:0; pointer-events:none; transition:opacity .15s var(--ease);}
+  .overlay.show{opacity:1; pointer-events:auto;}
+
+  .menu-pop{
+    position:absolute; z-index:51; min-width:180px;
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md); padding:6px;
+    box-shadow:var(--shadow-lg);
+  }
+  .menu-item{
+    display:flex; align-items:center; gap:10px; width:100%; text-align:left;
+    background:transparent; border:none; color:var(--text-700); padding:10px 12px; border-radius:var(--r-sm); font-size:13.5px;
+    transition:background-color .12s var(--ease);
+  }
+  .menu-item:active{background:var(--bg-sunken);}
+  @media (hover:hover) and (pointer:fine){ .menu-item:hover{background:var(--bg-sunken);} }
+  .menu-item.danger{color:var(--danger);}
+  .menu-divider{height:1px; background:var(--line); margin:5px 4px;}
+  .menu-sub-label{font-size:10.5px; color:var(--text-400); padding:8px 12px 4px; text-transform:uppercase; letter-spacing:.08em; font-weight:600;}
+
+  .modal{
+    position:absolute; z-index:52; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:min(320px, 86vw); background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg);
+    padding:22px; box-shadow:var(--shadow-lg);
+  }
+  .modal h4{margin:0 0 14px; font-size:15px; font-family:var(--display-font); font-weight:600; color:var(--text-900); letter-spacing:-.01em;}
+  .modal h4 .modal-hint{font-family:var(--ui-font); font-weight:500; font-size:12.5px; color:var(--text-500);}
+  .modal p{margin:0 0 18px; font-size:13.5px; color:var(--text-500); line-height:1.55;}
+  .modal input[type="text"]{
+    width:100%; background:var(--bg-app); border:1px solid var(--line-strong); color:var(--text-900);
+    border-radius:var(--r-sm); padding:11px 12px; font-size:14px; margin-bottom:18px; transition:border-color .15s var(--ease);
+  }
+  .modal input[type="text"]:focus{outline:none; border-color:var(--accent-400); box-shadow:0 0 0 3px var(--accent-wash);}
+  .modal-actions{display:flex; gap:8px; justify-content:flex-end;}
+  .modal-actions .btn{padding:9px 16px;}
+
+  /* ============ READER SCREEN ============ */
+  #readerScreen{ background:var(--bg-app); }
+  .topbar{
+    display:flex; align-items:center; gap:2px;
+    padding:8px 8px; padding-top:calc(8px + env(safe-area-inset-top));
+    background:var(--surface); border-bottom:1px solid var(--line); z-index:20;
+  }
+  .icon-btn{
+    background:transparent; border:none; color:var(--text-700);
+    width:38px; height:38px; border-radius:var(--r-sm); display:flex; align-items:center; justify-content:center; flex:0 0 auto;
+    transition:background-color .15s var(--ease), color .15s var(--ease);
+  }
+  .icon-btn:active{background:var(--bg-sunken);}
+  @media (hover:hover) and (pointer:fine){ .icon-btn:hover{background:var(--bg-sunken);} }
+  .icon-btn.active{background:var(--accent-wash); color:var(--accent-500);}
+  .icon-btn .icon{width:20px; height:20px;}
+  .topbar .title{
+    flex:1; min-width:0; text-align:center; font-size:13.5px; font-weight:600;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--text-900); font-family:var(--display-font); letter-spacing:-.005em;
+  }
+  .topbar .progress-pct{font-size:12px; color:var(--accent-500); font-variant-numeric:tabular-nums; width:36px; text-align:right; font-weight:600;}
+  .topbar .aa-btn{font-family:var(--display-font); font-weight:600; font-size:14px;}
+
+  .read-scroll{flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; background:var(--read-bg, var(--bg-app)); scroll-behavior:smooth;}
+  .read-inner{
+    position:relative; max-width:min(680px, 92vw); margin:0 auto; padding:44px 6px 96px;
+    font-family:var(--read-font); font-size:var(--read-size); line-height:1.85; color:var(--read-text, #1d1e21);
+  }
+  .read-inner h1,.read-inner h2,.read-inner h3{font-weight:700; line-height:1.35; margin:1.4em 0 .6em; color:inherit; letter-spacing:-.01em;}
+  .read-inner h1{font-size:1.55em; border-bottom:1px solid currentColor; padding-bottom:.35em; opacity:1;}
+  .read-inner h2{font-size:1.28em;}
+  .read-inner h3{font-size:1.1em;}
+  .read-inner p{margin:0 0 1.1em;}
+  .read-inner ul,.read-inner ol{margin:0 0 1.1em; padding-left:1.4em;}
+  .read-inner li{margin-bottom:.4em;}
+  .read-inner blockquote{margin:0 0 1.1em; padding:.5em 1.1em; border-left:3px solid var(--accent-500); background:rgba(201,122,69,0.08); font-style:italic; border-radius:0 6px 6px 0;}
+  .read-inner code{font-family:'SFMono-Regular',Consolas,monospace; font-size:.85em; background:rgba(0,0,0,0.06); padding:.15em .4em; border-radius:5px;}
+  .read-inner pre{background:rgba(0,0,0,0.06); padding:16px; border-radius:var(--r-md); overflow-x:auto; margin:0 0 1.2em;}
+  .read-inner pre code{background:none; padding:0;}
+  .read-inner img{max-width:100%; border-radius:var(--r-sm); display:block; margin:1em auto;}
+  .read-inner table{border-collapse:collapse; width:100%; margin:0 0 1.2em; font-size:.92em;}
+  .read-inner th,.read-inner td{border:1px solid rgba(0,0,0,0.15); padding:8px 10px; text-align:left;}
+  .read-inner hr{border:none; border-top:1px solid rgba(0,0,0,0.15); margin:2em 0;}
+  .read-inner a{color:var(--accent-500);}
+
+  .ink-canvas{position:absolute; top:0; left:0; width:100%; height:100%; touch-action:none; z-index:5;}
+  .ink-canvas.inactive{pointer-events:none;}
+  .ink-cursor{position:fixed; top:0; left:0; pointer-events:none; border-radius:50%; transform:translate(-50%,-50%); z-index:200; display:none; box-sizing:border-box;}
+
+  [data-theme="light"] .read-scroll{ --read-bg:#faf9f6; --read-text:#1d1e21; }
+  [data-theme="sepia"] .read-scroll{ --read-bg:#f1e6d3; --read-text:#3b3226; }
+  [data-theme="night"] .read-scroll{ --read-bg:#111318; --read-text:#e6e6e2; }
+  [data-theme="night"] .read-inner code, [data-theme="night"] .read-inner pre{background:rgba(255,255,255,0.08);}
+  [data-theme="night"] .read-inner blockquote{background:rgba(227,165,118,0.12);}
+  [data-theme="night"] .read-inner th,[data-theme="night"] .read-inner td{border-color:rgba(255,255,255,0.15);}
+  [data-theme="night"] .read-inner hr{border-color:rgba(255,255,255,0.15);}
+
+  .chapternav{
+    display:flex; align-items:center; gap:10px; padding:10px 14px; padding-bottom:calc(10px + env(safe-area-inset-bottom));
+    background:var(--surface); border-top:1px solid var(--line); z-index:20;
+  }
+  .navbtn{flex:0 0 auto; background:var(--bg-sunken); color:var(--text-700); border:none; border-radius:var(--r-sm); padding:9px 15px; font-size:13px; font-weight:600; transition:background-color .15s var(--ease);}
+  .navbtn:disabled{opacity:.4;}
+  .navbtn:active:not(:disabled){background:var(--bg-sunken-2);}
+  @media (hover:hover) and (pointer:fine){ .navbtn:not(:disabled):hover{background:var(--bg-sunken-2);} }
+  .chapter-indicator{flex:1; text-align:center; font-size:12px; color:var(--text-500); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-variant-numeric:tabular-nums;}
+
+  .ribbon-track{position:absolute; top:0; right:0; width:12px; height:100%; background:var(--bg-sunken-2); z-index:15; pointer-events:none;}
+  .ribbon-fill{
+    position:absolute; top:0; left:0; width:100%; height:0%;
+    background:linear-gradient(180deg, var(--accent-300), var(--accent-500));
+    clip-path:polygon(0 0, 100% 0, 100% calc(100% - 9px), 50% 100%, 0 calc(100% - 9px));
+    transition:height .3s var(--ease);
+    box-shadow:0 0 12px rgba(168,95,48,.35);
+  }
+
+  .drawer{
+    position:absolute; top:0; left:0; height:100%; width:min(300px, 82vw);
+    background:var(--surface); z-index:55; transform:translateX(-100%); transition:transform .28s var(--ease);
+    display:flex; flex-direction:column; box-shadow:2px 0 30px rgba(63,58,52,0.18); border-right:1px solid var(--line);
+  }
+  .drawer.show{transform:translateX(0);}
+  .drawer-head{padding:20px 18px 14px; border-bottom:1px solid var(--line);}
+  .drawer-head .k{font-size:10.5px; text-transform:uppercase; letter-spacing:.12em; color:var(--text-400); font-weight:600;}
+  .drawer-head .book-title{font-family:var(--display-font); font-weight:600; font-size:17px; margin-top:5px; color:var(--text-900); letter-spacing:-.01em;}
+  .toc-list{flex:1; overflow-y:auto; padding:8px;}
+  .toc-item{display:flex; align-items:baseline; gap:10px; width:100%; text-align:left; background:transparent; border:none; color:var(--text-700); padding:11px 10px; border-radius:var(--r-sm); font-size:14px; border-left:2px solid transparent; transition:background-color .15s var(--ease), border-color .15s var(--ease);}
+  .toc-item .n{color:var(--text-400); font-size:11.5px; font-variant-numeric:tabular-nums; flex:0 0 20px;}
+  .toc-item.active{background:var(--accent-wash); color:var(--accent-500); border-left-color:var(--accent-400);}
+  @media (hover:hover) and (pointer:fine){ .toc-item:not(.active):hover{background:var(--bg-sunken);} }
+
+  .pop{
+    position:absolute; top:52px; right:10px; z-index:55;
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg); padding:18px; width:226px;
+    box-shadow:var(--shadow-lg); opacity:0; transform:translateY(-6px) scale(.98); pointer-events:none; transition:all .15s var(--ease);
+  }
+  .pop.show{opacity:1; transform:translateY(0) scale(1); pointer-events:auto;}
+  .pop h5{margin:0 0 10px; font-size:10.5px; text-transform:uppercase; letter-spacing:.1em; color:var(--text-400); font-weight:600;}
+  .font-row{display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;}
+  .font-row button{width:34px; height:34px; border-radius:var(--r-sm); border:1px solid var(--line-strong); background:var(--bg-sunken); color:var(--text-700); font-size:16px; font-weight:700; transition:background-color .15s var(--ease);}
+  .font-row button:active{background:var(--bg-sunken-2);}
+  @media (hover:hover) and (pointer:fine){ .font-row button:hover{background:var(--bg-sunken-2); border-color:var(--text-400);} }
+  .font-row .val{font-size:13px; color:var(--text-900); font-variant-numeric:tabular-nums; font-weight:600;}
+  .theme-row{display:flex; gap:8px;}
+  .theme-swatch{position:relative; flex:1; height:44px; border-radius:var(--r-sm); border:2px solid var(--line); display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; transition:border-color .15s var(--ease);}
+  .theme-swatch.active{border-color:var(--accent-400); box-shadow:0 0 0 3px var(--accent-wash);}
+  .sw-light{background:#faf9f6; color:#1d1e21;}
+  .sw-sepia{background:#f1e6d3; color:#3b3226;}
+  .sw-night{background:#131418; color:#e6e6e2;}
+
+  .ink-pop{left:10px; right:auto;}
+  .ink-row{display:flex; align-items:center; gap:9px; margin-bottom:18px; flex-wrap:wrap;}
+  .ink-swatch{width:30px; height:30px; border-radius:50%; border:2px solid transparent; background:var(--sw); position:relative; flex:0 0 auto; padding:0;}
+  .ink-swatch.active{box-shadow:0 0 0 2px var(--surface), 0 0 0 4px var(--text-700);}
+  .ink-swatch.ink-eraser{background:var(--bg-sunken); color:var(--text-500); display:flex; align-items:center; justify-content:center; border-color:var(--line-strong);}
+  .ink-swatch.ink-eraser .icon{width:15px; height:15px;}
+  .ink-swatch.ink-eraser.active{background:var(--bg-sunken-2); color:var(--text-900); box-shadow:0 0 0 2px var(--surface), 0 0 0 4px var(--text-700);}
+  .ink-size-row{display:flex; gap:8px; margin-bottom:18px;}
+  .ink-size-btn{flex:1; height:34px; border-radius:var(--r-sm); border:1px solid var(--line-strong); background:var(--surface); color:var(--text-500); font-size:14px; display:flex; align-items:center; justify-content:center; transition:all .15s var(--ease);}
+  .ink-size-btn .dot{border-radius:50%; background:currentColor;}
+  .ink-size-btn.active{border-color:var(--accent-400); color:var(--accent-500); background:var(--accent-wash);}
+  .ink-clear-btn{width:100%; justify-content:center;}
+
+  /* tablet / desktop: two-column library */
+  @media (min-width:720px){
+    .lib-body{flex-direction:row;}
+    .folder-rail{
+      flex-direction:column; width:240px; border-bottom:none; border-right:1px solid var(--line);
+      padding:20px 14px; gap:14px;
+    }
+    .rail-row{flex-direction:column; overflow-x:visible; white-space:normal;}
+    .rail-crumbs{flex-wrap:wrap; overflow-x:visible; white-space:normal;}
+    .folder-chip{justify-content:flex-start; border-radius:var(--r-sm);}
+    .lib-main{padding:24px 32px 100px;}
+    .read-inner{padding-top:60px;}
+  }
+  @media (min-width:960px){
+    .lib-main{padding:28px 40px 100px;}
+    .file-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:var(--sp-3);}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ============ LIBRARY SCREEN ============ -->
+  <section id="libraryScreen" class="screen">
+    <div class="lib-topbar">
+      <div class="lib-brand">Study Shelf</div>
+      <div class="lib-spacer"></div>
+      <button class="btn btn-ghost" id="newFolderBtn">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/><path d="M12 11v4M10 13h4"/></svg>
+        새 폴더
+      </button>
+      <button class="btn btn-primary" id="uploadBtn">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="M7 8l5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+        파일 업로드
+      </button>
+    </div>
+
+    <div class="lib-body" id="libBody">
+      <div class="folder-rail" id="folderRail"></div>
+      <div class="lib-main" id="libMain">
+        <div id="fileList"></div>
+      </div>
+
+      <div class="drag-overlay" id="dragOverlay">
+        <div class="msg">파일을 여기에 놓으면 서재에 추가됩니다</div>
+      </div>
+    </div>
+
+    <input type="file" id="fileInput" accept=".md,.markdown,text/markdown,text/plain" multiple>
+  </section>
+
+  <!-- ============ READER SCREEN ============ -->
+  <section id="readerScreen" class="screen hidden" data-theme="light">
+    <div class="topbar">
+      <button class="icon-btn" id="backBtn" aria-label="서재로">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <button class="icon-btn" id="tocBtn" aria-label="목차">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <button class="icon-btn" id="penBtn" aria-label="필기">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+      </button>
+      <div class="title" id="bookTitleTop">제목</div>
+      <div class="progress-pct" id="progressPct">0%</div>
+      <button class="icon-btn aa-btn" id="settingsBtn" aria-label="설정">Aa</button>
+    </div>
+
+    <div class="read-scroll" id="readScroll">
+      <div class="read-inner" id="readInner"></div>
+    </div>
+
+    <div class="chapternav">
+      <button class="navbtn" id="prevBtn">이전</button>
+      <div class="chapter-indicator" id="chapterIndicator">1 / 1</div>
+      <button class="navbtn" id="nextBtn">다음</button>
+    </div>
+
+    <div class="ribbon-track"><div class="ribbon-fill" id="ribbonFill"></div></div>
+
+    <div class="pop" id="settingsPop">
+      <h5>글자 크기</h5>
+      <div class="font-row">
+        <button id="fontMinus" aria-label="글자 작게">–</button>
+        <span class="val" id="fontVal">18px</span>
+        <button id="fontPlus" aria-label="글자 크게">+</button>
+      </div>
+      <h5>테마</h5>
+      <div class="theme-row">
+        <button class="theme-swatch sw-light" data-theme-choice="light">밝게</button>
+        <button class="theme-swatch sw-sepia" data-theme-choice="sepia">세피아</button>
+        <button class="theme-swatch sw-night" data-theme-choice="night">야간</button>
+      </div>
+    </div>
+
+    <div class="pop ink-pop" id="inkPop">
+      <h5>펜 색상</h5>
+      <div class="ink-row">
+        <button class="ink-swatch active" data-ink-color="#3F3A34" style="--sw:#3F3A34" aria-label="검정 펜"></button>
+        <button class="ink-swatch" data-ink-color="#C97A45" style="--sw:#C97A45" aria-label="주황 펜"></button>
+        <button class="ink-swatch" data-ink-color="#7C8FA6" style="--sw:#7C8FA6" aria-label="파랑 펜"></button>
+        <button class="ink-swatch" data-ink-color="#B4574E" style="--sw:#B4574E" aria-label="빨강 펜"></button>
+        <button class="ink-swatch ink-eraser" id="inkEraserBtn" aria-label="지우개">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20H8l-5-5a2 2 0 0 1 0-2.8l9-9a2 2 0 0 1 2.8 0l5.2 5.2a2 2 0 0 1 0 2.8L13 18"/></svg>
+        </button>
+      </div>
+      <h5>굵기</h5>
+      <div class="ink-size-row">
+        <button class="ink-size-btn" data-ink-size="2.5"><span class="dot" style="width:6px;height:6px;"></span></button>
+        <button class="ink-size-btn active" data-ink-size="4.5"><span class="dot" style="width:10px;height:10px;"></span></button>
+        <button class="ink-size-btn" data-ink-size="8"><span class="dot" style="width:15px;height:15px;"></span></button>
+      </div>
+      <button class="btn btn-ghost ink-clear-btn" id="inkClearBtn">이 챕터 지우기</button>
+    </div>
+
+    <div class="drawer" id="drawer">
+      <div class="drawer-head">
+        <div class="k">목차</div>
+        <div class="book-title" id="drawerTitle">제목</div>
+      </div>
+      <div class="toc-list" id="tocList"></div>
+    </div>
+  </section>
+
+  <!-- ============ shared overlay / modal layer ============ -->
+  <div class="overlay" id="overlay"></div>
+  <div id="modalLayer"></div>
+
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+
+  /* ---------------- storage: IndexedDB-backed key/value store ----------------
+     Keeps the same logical shape as before (folder metadata, file metadata
+     with reading progress, and raw file-content text keyed by id) so the rest
+     of the app can keep calling S.getJSON/setJSON/getText/setText/del. */
+  const DB_NAME = "seojae-db";
+  const DB_VERSION = 1;
+  const STORE = "kv";
+  let dbPromise = null;
+
+  function openDB(){
+    if(dbPromise) return dbPromise;
+    dbPromise = new Promise((resolve, reject)=>{
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = ()=>{
+        if(!req.result.objectStoreNames.contains(STORE)) req.result.createObjectStore(STORE);
+      };
+      req.onsuccess = ()=> resolve(req.result);
+      req.onerror = ()=> reject(req.error);
+    });
+    return dbPromise;
+  }
+  function idbGet(key){
+    return openDB().then(db => new Promise((resolve, reject)=>{
+      const tx = db.transaction(STORE, "readonly");
+      const req = tx.objectStore(STORE).get(key);
+      req.onsuccess = ()=> resolve(req.result);
+      req.onerror = ()=> reject(req.error);
+    }));
+  }
+  function idbSet(key, value){
+    return openDB().then(db => new Promise((resolve, reject)=>{
+      const tx = db.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).put(value, key);
+      tx.oncomplete = ()=> resolve();
+      tx.onerror = ()=> reject(tx.error);
+    }));
+  }
+  function idbDel(key){
+    return openDB().then(db => new Promise((resolve, reject)=>{
+      const tx = db.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).delete(key);
+      tx.oncomplete = ()=> resolve();
+      tx.onerror = ()=> reject(tx.error);
+    }));
+  }
+
+  const S = {
+    async getJSON(key, fallback){
+      try{ const v = await idbGet(key); return v===undefined ? fallback : v; }catch(e){ return fallback; }
+    },
+    async setJSON(key, val){ try{ await idbSet(key, val); }catch(e){} },
+    async getText(key){
+      try{ const v = await idbGet(key); return v===undefined ? null : v; }catch(e){ return null; }
+    },
+    async setText(key, val){ try{ await idbSet(key, val); }catch(e){} },
+    async del(key){ try{ await idbDel(key); }catch(e){} }
+  };
+  const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+  const escapeHtml = (s) => String(s).replace(/[&<>]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[ch]));
+
+  /* ---------------- library state ---------------- */
+  let folders = [];   // [{id, name, parentId}]  parentId=null -> root-level folder
+  let files = [];     // [{id, name, title, folderId, chapterCount, updatedTs, progress:{chapterIdx,fontSize,theme}}]
+  let libView = "browse"; // 'browse' | 'all' | 'uncategorized'
+  let folderPath = [];    // folder id trail for the drill-down view; [] = library root
+
+  // IndexedDB's initial open+read is async, so a file dropped/uploaded in the
+  // first instant after page load could otherwise race loadLibrary()'s
+  // reassignment of `files` and get silently overwritten. Anything that
+  // pushes into `files`/`folders` awaits this first.
+  let markLibraryReady;
+  const libraryReady = new Promise(resolve => { markLibraryReady = resolve; });
+
+  async function loadLibrary(){
+    folders = await S.getJSON("app:folders", []);
+    files = await S.getJSON("app:files", []);
+  }
+  async function persistFolders(){ await S.setJSON("app:folders", folders); }
+  async function persistFiles(){ await S.setJSON("app:files", files); }
+
+  function closeAllOverlays(){
+    $("overlay").classList.remove("show");
+    $("modalLayer").innerHTML = "";
+    document.querySelectorAll(".menu-pop").forEach(n=>n.remove());
+  }
+  $("overlay").addEventListener("click", closeAllOverlays);
+  $("newFolderBtn").addEventListener("click", ()=> openNewFolderModal());
+
+  /* ---------------- folder tree helpers ---------------- */
+  function currentParentId(){ return folderPath.length ? folderPath[folderPath.length-1] : null; }
+  function folderById(id){ return folders.find(f=>f.id===id); }
+  function childFolders(parentId){ return folders.filter(f=>(f.parentId||null)===(parentId||null)); }
+  function descendantFolderIds(id){
+    const out=[id];
+    childFolders(id).forEach(c=> out.push(...descendantFolderIds(c.id)));
+    return out;
+  }
+  function folderFileCount(id){
+    const ids = new Set(descendantFolderIds(id));
+    return files.filter(f=> f.folderId && ids.has(f.folderId)).length;
+  }
+  function folderPathLabel(id){
+    const parts=[];
+    let cur = folderById(id);
+    while(cur){ parts.unshift(cur.name); cur = cur.parentId ? folderById(cur.parentId) : null; }
+    return parts.join(" › ");
+  }
+
+  /* ---------------- folder rail ---------------- */
+  function renderFolderRail(){
+    const rail = $("folderRail");
+    rail.innerHTML = "";
+
+    const pinned = document.createElement("div");
+    pinned.className = "rail-row";
+    const all = document.createElement("button");
+    all.className = "folder-chip" + (libView==="all" ? " active":"");
+    all.innerHTML = "전체 <span class=\"count\">"+files.length+"</span>";
+    all.addEventListener("click", ()=>{ libView="all"; renderAll(); });
+    pinned.appendChild(all);
+
+    const uncatCount = files.filter(f=>!f.folderId).length;
+    const uncat = document.createElement("button");
+    uncat.className = "folder-chip" + (libView==="uncategorized" ? " active":"");
+    uncat.innerHTML = "미분류 <span class=\"count\">"+uncatCount+"</span>";
+    uncat.addEventListener("click", ()=>{ libView="uncategorized"; renderAll(); });
+    pinned.appendChild(uncat);
+
+    const add = document.createElement("button");
+    add.className = "folder-chip new";
+    add.textContent = "+ 폴더";
+    add.addEventListener("click", ()=> openNewFolderModal());
+    pinned.appendChild(add);
+    rail.appendChild(pinned);
+
+    // Breadcrumb + subfolder chips stay visible no matter which pinned filter
+    // (전체/미분류) is active, so switching to a flat filter never strands you
+    // without a way back into the folder tree — clicking any of them jumps
+    // straight back into 'browse' mode at that location.
+    const crumbs = document.createElement("div");
+    crumbs.className = "rail-crumbs";
+    const home = document.createElement("button");
+    home.className = "crumb-item" + (libView==="browse" && folderPath.length===0 ? " active" : "");
+    home.textContent = "서재";
+    home.addEventListener("click", ()=>{ libView="browse"; folderPath=[]; renderAll(); });
+    crumbs.appendChild(home);
+    folderPath.forEach((fid, i)=>{
+      const sep = document.createElement("span");
+      sep.className = "crumb-sep";
+      sep.textContent = "›";
+      crumbs.appendChild(sep);
+      const seg = document.createElement("button");
+      seg.className = "crumb-item" + (libView==="browse" && i===folderPath.length-1 ? " active" : "");
+      const fo = folderById(fid);
+      seg.textContent = fo ? fo.name : "?";
+      seg.addEventListener("click", ()=>{ libView="browse"; folderPath = folderPath.slice(0, i+1); renderAll(); });
+      crumbs.appendChild(seg);
+    });
+    rail.appendChild(crumbs);
+
+    const kids = childFolders(currentParentId());
+    if(kids.length){
+      const kidsRow = document.createElement("div");
+      kidsRow.className = "rail-row";
+      kids.forEach(fo=>{
+        const chip = document.createElement("button");
+        chip.className = "folder-chip";
+        chip.innerHTML = escapeHtml(fo.name) + " <span class=\"count\">"+folderFileCount(fo.id)+"</span>";
+        chip.addEventListener("click", ()=>{ libView="browse"; folderPath = [...folderPath, fo.id]; renderAll(); });
+        kidsRow.appendChild(chip);
+      });
+      rail.appendChild(kidsRow);
+    }
+  }
+
+  /* ---------------- file list ---------------- */
+  function visibleFiles(){
+    const sorted = (arr) => arr.slice().sort((a,b)=>b.updatedTs-a.updatedTs);
+    if(libView==="all") return sorted(files);
+    if(libView==="uncategorized") return sorted(files.filter(f=>!f.folderId));
+    const pid = currentParentId();
+    return sorted(files.filter(f=>(f.folderId||null) === pid));
+  }
+
+  function renderFileList(){
+    const list = $("fileList");
+    const vis = visibleFiles();
+    list.innerHTML = "";
+    if(vis.length===0){
+      const hasKids = libView==="browse" && childFolders(currentParentId()).length>0;
+      if(hasKids){
+        const atRoot = folderPath.length===0;
+        const hint = document.createElement("div");
+        hint.className = "empty-state empty-state--sub";
+        hint.innerHTML = '<span>'+(atRoot ? "위 폴더를 눌러 안에 있는 파일을 확인해보세요." : "이 폴더에는 하위 폴더만 있고 파일은 없어요. 위에서 폴더를 눌러 들어가보세요.")+'</span>';
+        list.appendChild(hint);
+        return;
+      }
+      const empty = document.createElement("div");
+      empty.className = "empty-state";
+      const noFilesAtAll = files.length===0;
+      empty.innerHTML =
+        '<svg class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h6"/></svg>'+
+        '<strong>'+(noFilesAtAll ? "아직 올린 파일이 없어요" : (libView==="browse" ? "이 폴더는 비어 있어요" : "여기엔 파일이 없어요"))+'</strong>'+
+        '<span>오른쪽 위 "파일 업로드" 버튼을 누르거나, md 파일을 화면에 끌어다 놓으면 서재에 추가돼요.</span>';
+      list.appendChild(empty);
+      return;
+    }
+    const grid = document.createElement("div");
+    grid.className = "file-grid";
+    vis.forEach(f=>{
+      const prog = f.progress || {};
+      const pct = typeof prog.pct === "number" ? Math.round(prog.pct*100) : 0;
+      const card = document.createElement("div");
+      card.className = "file-card";
+      const d = new Date(f.updatedTs);
+      const dateStr = d.toLocaleDateString("ko-KR", {month:"short", day:"numeric"});
+      const fPath = f.folderId ? folderPathLabel(f.folderId) : null;
+      card.innerHTML =
+        '<div class="doc-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6"/></svg></div>'+
+        '<div class="info">'+
+          '<div class="name">'+escapeHtml(f.title)+'</div>'+
+          '<div class="meta">'+
+            (fPath ? '<span class="tag">'+escapeHtml(fPath)+'</span>' : '')+
+            '<span>'+f.chapterCount+'개 챕터</span><span class="dot"></span><span>'+dateStr+'</span>'+
+            (pct>0 ? '<span class="dot"></span><span>'+pct+'% 읽음</span>' : '')+
+          '</div>'+
+          '<div class="progress-bar"><i style="width:'+pct+'%"></i></div>'+
+        '</div>'+
+        '<button class="more-btn" aria-label="더보기"><svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button>'+
+        '<button class="hit" aria-label="열기"></button>';
+      card.querySelector(".hit").addEventListener("click", ()=> openBook(f.id));
+      card.querySelector(".more-btn").addEventListener("click", (e)=>{ e.stopPropagation(); openFileMenu(e.currentTarget, f); });
+      grid.appendChild(card);
+    });
+    list.appendChild(grid);
+  }
+
+  function renderAll(){ renderFolderRail(); renderFileList(); }
+
+  /* ---------------- new folder modal ---------------- */
+  function openNewFolderModal(){
+    closeAllOverlays();
+    $("overlay").classList.add("show");
+    const parentId = currentParentId();
+    const parentLabel = parentId ? folderPathLabel(parentId) : null;
+    const modal = document.createElement("div");
+    modal.className = "modal";
+    modal.innerHTML =
+      '<h4>새 폴더 만들기'+(parentLabel ? ' <span class="modal-hint">· '+escapeHtml(parentLabel)+' 안에</span>' : '')+'</h4>'+
+      '<input type="text" id="folderNameInput" placeholder="예: 전공 서적, 자격증 공부">'+
+      '<div class="modal-actions">'+
+        '<button class="btn btn-ghost" id="cancelFolder">취소</button>'+
+        '<button class="btn btn-primary" id="confirmFolder">만들기</button>'+
+      '</div>';
+    $("modalLayer").appendChild(modal);
+    const input = $("folderNameInput");
+    input.focus();
+    $("cancelFolder").addEventListener("click", closeAllOverlays);
+    const confirm = ()=>{
+      const name = input.value.trim();
+      if(!name) return;
+      folders.push({id:genId(), name, parentId});
+      persistFolders();
+      closeAllOverlays();
+      renderAll();
+    };
+    $("confirmFolder").addEventListener("click", confirm);
+    input.addEventListener("keydown", (e)=>{ if(e.key==="Enter") confirm(); });
+  }
+
+  /* ---------------- file kebab menu ---------------- */
+  function openFileMenu(anchor, f){
+    closeAllOverlays();
+    $("overlay").classList.add("show");
+    const rect = anchor.getBoundingClientRect();
+    const menu = document.createElement("div");
+    menu.className = "menu-pop";
+    menu.style.top = (rect.bottom + 6) + "px";
+    menu.style.right = (window.innerWidth - rect.right) + "px";
+    menu.innerHTML =
+      '<button class="menu-item" data-act="rename"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>이름 변경</button>'+
+      '<div class="menu-sub-label">폴더로 이동</div>'+
+      '<button class="menu-item" data-act="move" data-folder="">미분류</button>'+
+      folders.map(fo=>'<button class="menu-item" data-act="move" data-folder="'+fo.id+'">'+escapeHtml(folderPathLabel(fo.id))+'</button>').join("")+
+      '<div class="menu-divider"></div>'+
+      '<button class="menu-item danger" data-act="delete"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>삭제</button>';
+    document.body.appendChild(menu);
+
+    // keep the menu fully on-screen, flipping above the anchor if it would overflow the bottom
+    const menuRect = menu.getBoundingClientRect();
+    if(rect.bottom + 6 + menuRect.height > window.innerHeight){
+      menu.style.top = "";
+      menu.style.bottom = (window.innerHeight - rect.top + 6) + "px";
+    }
+
+    menu.querySelectorAll('[data-act="move"]').forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        f.folderId = btn.dataset.folder || null;
+        f.updatedTs = Date.now();
+        persistFiles();
+        closeAllOverlays();
+        renderAll();
+      });
+    });
+    menu.querySelector('[data-act="rename"]').addEventListener("click", ()=> openRenameModal(f));
+    menu.querySelector('[data-act="delete"]').addEventListener("click", ()=> openDeleteModal(f));
+  }
+
+  function openRenameModal(f){
+    closeAllOverlays();
+    $("overlay").classList.add("show");
+    const modal = document.createElement("div");
+    modal.className = "modal";
+    modal.innerHTML =
+      '<h4>이름 변경</h4>'+
+      '<input type="text" id="renameInput" value="'+escapeHtml(f.title)+'">'+
+      '<div class="modal-actions">'+
+        '<button class="btn btn-ghost" id="cancelRename">취소</button>'+
+        '<button class="btn btn-primary" id="confirmRename">저장</button>'+
+      '</div>';
+    $("modalLayer").appendChild(modal);
+    const input = $("renameInput");
+    input.focus(); input.select();
+    $("cancelRename").addEventListener("click", closeAllOverlays);
+    const confirm = ()=>{
+      const val = input.value.trim();
+      if(!val) return;
+      f.title = val;
+      f.updatedTs = Date.now();
+      persistFiles();
+      closeAllOverlays();
+      renderAll();
+    };
+    $("confirmRename").addEventListener("click", confirm);
+    input.addEventListener("keydown", (e)=>{ if(e.key==="Enter") confirm(); });
+  }
+
+  function openDeleteModal(f){
+    closeAllOverlays();
+    $("overlay").classList.add("show");
+    const modal = document.createElement("div");
+    modal.className = "modal";
+    modal.innerHTML =
+      '<h4>파일을 삭제할까요?</h4>'+
+      '<p>"'+escapeHtml(f.title)+'"가 서재에서 삭제돼요. 이 작업은 되돌릴 수 없어요.</p>'+
+      '<div class="modal-actions">'+
+        '<button class="btn btn-ghost" id="cancelDelete">취소</button>'+
+        '<button class="btn btn-primary" id="confirmDelete" style="background:var(--danger); color:#fff;">삭제</button>'+
+      '</div>';
+    $("modalLayer").appendChild(modal);
+    $("cancelDelete").addEventListener("click", closeAllOverlays);
+    $("confirmDelete").addEventListener("click", async ()=>{
+      files = files.filter(x=>x.id!==f.id);
+      await persistFiles();
+      await S.del("file-content:"+f.id);
+      closeAllOverlays();
+      renderAll();
+    });
+  }
+
+  /* ---------------- upload flow ---------------- */
+  const uploadInput = $("fileInput");
+  $("uploadBtn").addEventListener("click", ()=> uploadInput.click());
+  uploadInput.addEventListener("change", (e)=>{
+    Array.from(e.target.files).forEach(handleFile);
+    uploadInput.value = "";
+  });
+
+  function handleFile(file){
+    if(!file) return;
+    if(!/\.(md|markdown)$/i.test(file.name) && file.type !== "text/markdown" && file.type !== "text/plain") return;
+    const reader = new FileReader();
+    reader.onload = async (e)=>{
+      await libraryReady;
+      const text = e.target.result;
+      const id = genId();
+      const h1 = text.match(/^#\s+(.*)/m);
+      const title = h1 ? h1[1].trim() : file.name.replace(/\.(md|markdown)$/i,"");
+      const chapters = splitChapters(text, title);
+      await S.setText("file-content:"+id, text);
+      files.push({
+        id, name:file.name, title,
+        folderId: currentParentId(),
+        chapterCount: chapters.length,
+        updatedTs: Date.now(),
+        progress: {chapterIdx:0, pct:0, fontSize:18, theme:"light"}
+      });
+      await persistFiles();
+      renderAll();
+    };
+    reader.readAsText(file, "utf-8");
+  }
+
+  const dragOverlay = $("dragOverlay");
+  let dragCounter = 0;
+  ["dragenter","dragover"].forEach(ev=>{
+    document.addEventListener(ev, (e)=>{
+      if(readerScreenVisible()) return;
+      e.preventDefault();
+      if(ev==="dragenter"){ dragCounter++; dragOverlay.classList.add("show"); }
+    });
+  });
+  ["dragleave"].forEach(ev=>{
+    document.addEventListener(ev, (e)=>{
+      dragCounter = Math.max(0, dragCounter-1);
+      if(dragCounter===0) dragOverlay.classList.remove("show");
+    });
+  });
+  document.addEventListener("drop", (e)=>{
+    if(readerScreenVisible()) return;
+    e.preventDefault();
+    dragCounter = 0;
+    dragOverlay.classList.remove("show");
+    const dt = e.dataTransfer;
+    if(dt && dt.files) Array.from(dt.files).forEach(handleFile);
+  });
+  function readerScreenVisible(){ return !$("readerScreen").classList.contains("hidden"); }
+
+  /* ---------------- markdown -> chapters ---------------- */
+  function splitChapters(md, fallbackTitle){
+    const lines = md.split("\n");
+    const headIdx = [];
+    lines.forEach((line,i)=>{ if(/^#{1,2}\s+\S/.test(line)) headIdx.push(i); });
+    const chunks = [];
+    if(headIdx.length >= 2){
+      if(headIdx[0] > 0){
+        const intro = lines.slice(0, headIdx[0]).join("\n").trim();
+        if(intro) chunks.push({title:"들어가며", text:intro});
+      }
+      for(let i=0;i<headIdx.length;i++){
+        const start = headIdx[i];
+        const end = i+1<headIdx.length ? headIdx[i+1] : lines.length;
+        const text = lines.slice(start,end).join("\n");
+        const m = lines[start].match(/^#{1,2}\s+(.*)/);
+        chunks.push({title: m ? m[1].trim() : "챕터 "+(i+1), text});
+      }
+    } else {
+      chunks.push({title: fallbackTitle, text: md});
+    }
+    return chunks.map(c=>({title:c.title, html: marked.parse(c.text)}));
+  }
+
+  /* ---------------- reader state ---------------- */
+  const readerScreen = $("readerScreen");
+  const libraryScreen = $("libraryScreen");
+  const readScroll = $("readScroll");
+  const readInner = $("readInner");
+  const ribbonFill = $("ribbonFill");
+  const progressPct = $("progressPct");
+  const chapterIndicator = $("chapterIndicator");
+  const bookTitleTop = $("bookTitleTop");
+  const drawerTitle = $("drawerTitle");
+  const tocList = $("tocList");
+  const drawer = $("drawer");
+  const settingsPop = $("settingsPop");
+  const fontVal = $("fontVal");
+
+  let activeFile = null;
+  let activeChapters = [];
+  let chapterIdx = 0;
+  let fontSize = 18;
+  let theme = "light";
+
+  async function openBook(id){
+    const f = files.find(x=>x.id===id);
+    if(!f) return;
+    const text = await S.getText("file-content:"+id);
+    if(text==null) return;
+    activeFile = f;
+    activeChapters = splitChapters(text, f.title);
+    fontSize = (f.progress && f.progress.fontSize) || 18;
+    theme = (f.progress && f.progress.theme) || "light";
+    applyFont(); applyTheme();
+
+    bookTitleTop.textContent = f.title;
+    drawerTitle.textContent = f.title;
+    buildTOC();
+
+    libraryScreen.classList.add("hidden");
+    readerScreen.classList.remove("hidden");
+    setPenMode(false);
+    renderChapter((f.progress && f.progress.chapterIdx) || 0);
+  }
+
+  async function renderChapter(idx, resetScroll){
+    chapterIdx = Math.max(0, Math.min(idx, activeChapters.length-1));
+    readInner.innerHTML = activeChapters[chapterIdx].html;
+    if(resetScroll !== false) readScroll.scrollTop = 0;
+    chapterIndicator.textContent = (chapterIdx+1) + " / " + activeChapters.length;
+    $("prevBtn").disabled = chapterIdx === 0;
+    $("nextBtn").disabled = chapterIdx === activeChapters.length-1;
+    Array.from(tocList.children).forEach((el,i)=> el.classList.toggle("active", i===chapterIdx));
+    updateProgress();
+    saveProgress();
+    await loadInkForChapter();
+    setupInkCanvas();
+  }
+
+  function updateProgress(){
+    const el = readScroll;
+    const max = el.scrollHeight - el.clientHeight;
+    const frac = max > 0 ? el.scrollTop / max : 1;
+    const overall = (chapterIdx + frac) / activeChapters.length;
+    ribbonFill.style.height = Math.min(100, Math.max(2, overall*100)) + "%";
+    progressPct.textContent = Math.round(overall*100) + "%";
+    return overall;
+  }
+  readScroll.addEventListener("scroll", ()=>{
+    updateProgress();
+    clearTimeout(readScroll._t);
+    readScroll._t = setTimeout(saveProgress, 500);
+  });
+
+  async function saveProgress(){
+    if(!activeFile) return;
+    const pct = updateProgress();
+    activeFile.progress = {chapterIdx, pct, fontSize, theme};
+    activeFile.updatedTs = Date.now();
+    await persistFiles();
+  }
+
+  function buildTOC(){
+    tocList.innerHTML = "";
+    activeChapters.forEach((c,i)=>{
+      const b = document.createElement("button");
+      b.className = "toc-item" + (i===chapterIdx ? " active":"");
+      b.innerHTML = '<span class="n">'+String(i+1).padStart(2,"0")+'</span><span>'+escapeHtml(c.title)+'</span>';
+      b.addEventListener("click", ()=>{ renderChapter(i); closeDrawer(); });
+      tocList.appendChild(b);
+    });
+  }
+
+  $("backBtn").addEventListener("click", ()=>{
+    setPenMode(false);
+    readerScreen.classList.add("hidden");
+    libraryScreen.classList.remove("hidden");
+    renderAll();
+  });
+  $("prevBtn").addEventListener("click", ()=> renderChapter(chapterIdx-1));
+  $("nextBtn").addEventListener("click", ()=> renderChapter(chapterIdx+1));
+
+  // desktop/laptop: arrow keys flip chapters, same as the prev/next buttons
+  document.addEventListener("keydown", (e)=>{
+    if(!readerScreenVisible()) return;
+    if(e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
+    if(e.key==="Escape"){
+      closeDrawer(); closeSettings(); setPenMode(false);
+      return;
+    }
+    // left/right only — up/down are left alone so they still scroll within
+    // the current chapter instead of jumping chapters unexpectedly
+    if(e.key==="ArrowRight"){
+      if(chapterIdx < activeChapters.length-1){ e.preventDefault(); renderChapter(chapterIdx+1); }
+    } else if(e.key==="ArrowLeft"){
+      if(chapterIdx > 0){ e.preventDefault(); renderChapter(chapterIdx-1); }
+    }
+  });
+
+  let touchX = null, touchY = null;
+  readScroll.addEventListener("touchstart", (e)=>{
+    if(penMode) return;
+    touchX = e.touches[0].clientX;
+    touchY = e.touches[0].clientY;
+  }, {passive:true});
+  readScroll.addEventListener("touchend", (e)=>{
+    if(penMode || touchX===null) return;
+    const dx = e.changedTouches[0].clientX - touchX;
+    const dy = e.changedTouches[0].clientY - touchY;
+    // only treat as a page-turn swipe if the drag is clearly horizontal,
+    // so normal up/down scrolling on tablets never gets mistaken for it
+    if(Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5){
+      if(dx < 0 && chapterIdx < activeChapters.length-1) renderChapter(chapterIdx+1);
+      else if(dx > 0 && chapterIdx > 0) renderChapter(chapterIdx-1);
+    }
+    touchX = null; touchY = null;
+  }, {passive:true});
+
+  function openDrawer(){ drawer.classList.add("show"); $("overlay").classList.add("show"); }
+  function closeDrawer(){ drawer.classList.remove("show"); $("overlay").classList.remove("show"); }
+  $("tocBtn").addEventListener("click", openDrawer);
+  $("overlay").addEventListener("click", ()=>{ closeDrawer(); closeSettings(); closeInkPop(); });
+
+  function openSettings(){ settingsPop.classList.add("show"); $("overlay").classList.add("show"); }
+  function closeSettings(){ settingsPop.classList.remove("show"); $("overlay").classList.remove("show"); }
+  $("settingsBtn").addEventListener("click", (e)=>{
+    e.stopPropagation();
+    settingsPop.classList.contains("show") ? closeSettings() : openSettings();
+  });
+
+  function applyFont(){
+    fontSize = Math.max(14, Math.min(26, fontSize));
+    document.documentElement.style.setProperty("--read-size", fontSize+"px");
+    fontVal.textContent = fontSize+"px";
+    resizeInkCanvas();
+  }
+  $("fontMinus").addEventListener("click", ()=>{ fontSize -= 1; applyFont(); saveProgress(); });
+  $("fontPlus").addEventListener("click", ()=>{ fontSize += 1; applyFont(); saveProgress(); });
+
+  function applyTheme(){
+    readerScreen.setAttribute("data-theme", theme);
+    document.querySelectorAll(".theme-swatch").forEach(s=> s.classList.toggle("active", s.dataset.themeChoice === theme));
+  }
+  document.querySelectorAll(".theme-swatch").forEach(s=>{
+    s.addEventListener("click", ()=>{ theme = s.dataset.themeChoice; applyTheme(); saveProgress(); });
+  });
+
+  /* ---------------- ink (handwriting) layer ----------------
+     A canvas overlay lives inside #readInner (so it scrolls together with the
+     chapter's own content) and stores strokes per file+chapter, normalized to
+     0..1 of the content box so they rescale when font size / width changes.
+     Known limitation: a big font-size change reflows text non-uniformly, so
+     ink follows along approximately rather than staying pixel-anchored to a
+     specific word. */
+  let inkCanvas = null, inkCtx = null;
+  let inkStrokes = [];
+  let inkColor = "#3F3A34";
+  let inkSize = 4.5;
+  let inkTool = "pen"; // 'pen' | 'eraser'
+  let penMode = false;
+  let inkDrawing = null;
+  let inkActivePointerId = null;
+
+  function inkKey(){ return activeFile ? "ink:"+activeFile.id+":"+chapterIdx : null; }
+
+  async function loadInkForChapter(){
+    const key = inkKey();
+    inkStrokes = key ? await S.getJSON(key, []) : [];
+  }
+  async function saveInkForChapter(){
+    const key = inkKey();
+    if(key) await S.setJSON(key, inkStrokes);
+  }
+
+  function setupInkCanvas(){
+    if(inkCanvas) inkCanvas.remove();
+    inkCanvas = document.createElement("canvas");
+    inkCanvas.className = "ink-canvas" + (penMode ? "" : " inactive");
+    readInner.appendChild(inkCanvas);
+    inkCtx = inkCanvas.getContext("2d");
+    wireInkPointerEvents();
+    resizeInkCanvas();
+  }
+
+  function resizeInkCanvas(){
+    if(!inkCanvas) return;
+    const w = readInner.clientWidth;
+    const h = readInner.scrollHeight;
+    const dpr = window.devicePixelRatio || 1;
+    inkCanvas.width = Math.max(1, Math.round(w*dpr));
+    inkCanvas.height = Math.max(1, Math.round(h*dpr));
+    inkCanvas.style.width = w+"px";
+    inkCanvas.style.height = h+"px";
+    inkCtx.setTransform(dpr,0,0,dpr,0,0);
+    redrawInk();
+  }
+
+  function paintStroke(stroke, w, h){
+    if(stroke.points.length < 2) return;
+    inkCtx.save();
+    inkCtx.globalCompositeOperation = stroke.tool==="eraser" ? "destination-out" : "source-over";
+    inkCtx.strokeStyle = stroke.color;
+    inkCtx.lineWidth = stroke.width;
+    inkCtx.lineCap = "round";
+    inkCtx.lineJoin = "round";
+    inkCtx.beginPath();
+    stroke.points.forEach((p,i)=>{
+      const x = p[0]*w, y = p[1]*h;
+      if(i===0) inkCtx.moveTo(x,y); else inkCtx.lineTo(x,y);
+    });
+    inkCtx.stroke();
+    inkCtx.restore();
+  }
+
+  function redrawInk(){
+    if(!inkCtx || !inkCanvas) return;
+    const w = readInner.clientWidth, h = readInner.scrollHeight;
+    inkCtx.clearRect(0,0,w,h);
+    inkStrokes.forEach(s=> paintStroke(s, w, h));
+  }
+
+  function pointerToNorm(e){
+    const w = readInner.clientWidth, h = readInner.scrollHeight;
+    const rect = inkCanvas.getBoundingClientRect();
+    return [ (e.clientX-rect.left)/w, (e.clientY-rect.top)/h ];
+  }
+
+  function strokeWidthFor(e){
+    const pressure = e.pressure && e.pressure>0 ? e.pressure : 0.5;
+    return inkTool==="eraser" ? inkSize*2.4 : inkSize*(0.6+pressure*0.8);
+  }
+
+  // Brush-size cursor ring: only for pen/mouse (hover-capable pointers) — a
+  // finger already sits exactly where it draws, so a trailing DOM circle
+  // would just be visual noise for touch input.
+  let inkCursorEl = null;
+  function ensureInkCursor(){
+    if(!inkCursorEl){
+      inkCursorEl = document.createElement("div");
+      inkCursorEl.className = "ink-cursor";
+      document.body.appendChild(inkCursorEl);
+    }
+    return inkCursorEl;
+  }
+  function updateInkCursor(e, width){
+    if(e.pointerType === "touch"){ hideInkCursor(); return; }
+    const el = ensureInkCursor();
+    const w = Math.max(6, width);
+    el.style.display = "block";
+    el.style.width = w+"px";
+    el.style.height = w+"px";
+    el.style.left = e.clientX+"px";
+    el.style.top = e.clientY+"px";
+    if(inkTool==="eraser"){
+      el.style.border = "1.5px solid rgba(63,58,52,.55)";
+      el.style.background = "rgba(63,58,52,.08)";
+    } else {
+      el.style.border = "1px solid rgba(255,255,255,.65)";
+      el.style.background = inkColor;
+      el.style.opacity = "0.55";
+    }
+  }
+  function hideInkCursor(){ if(inkCursorEl) inkCursorEl.style.display = "none"; }
+
+  function wireInkPointerEvents(){
+    inkCanvas.addEventListener("pointerdown", (e)=>{
+      if(!penMode) return;
+      e.preventDefault();
+      inkActivePointerId = e.pointerId;
+      try{ inkCanvas.setPointerCapture(e.pointerId); }catch(err){}
+      const width = strokeWidthFor(e);
+      updateInkCursor(e, width);
+      inkDrawing = { tool:inkTool, color:inkColor, width, points:[pointerToNorm(e)] };
+    });
+    inkCanvas.addEventListener("pointermove", (e)=>{
+      if(!penMode) return;
+      updateInkCursor(e, strokeWidthFor(e));
+      if(!inkDrawing || e.pointerId !== inkActivePointerId) return;
+      e.preventDefault();
+      const w = readInner.clientWidth, h = readInner.scrollHeight;
+      const pt = pointerToNorm(e);
+      const prev = inkDrawing.points[inkDrawing.points.length-1];
+      inkDrawing.points.push(pt);
+      inkCtx.save();
+      inkCtx.globalCompositeOperation = inkDrawing.tool==="eraser" ? "destination-out" : "source-over";
+      inkCtx.strokeStyle = inkDrawing.color;
+      inkCtx.lineWidth = inkDrawing.width;
+      inkCtx.lineCap = "round"; inkCtx.lineJoin = "round";
+      inkCtx.beginPath();
+      inkCtx.moveTo(prev[0]*w, prev[1]*h);
+      inkCtx.lineTo(pt[0]*w, pt[1]*h);
+      inkCtx.stroke();
+      inkCtx.restore();
+    });
+    const endStroke = (e)=>{
+      if(!inkDrawing || (e.pointerId!==undefined && e.pointerId!==inkActivePointerId)) return;
+      if(inkDrawing.points.length>1){
+        inkStrokes.push(inkDrawing);
+        saveInkForChapter();
+      }
+      inkDrawing = null;
+      inkActivePointerId = null;
+    };
+    inkCanvas.addEventListener("pointerup", endStroke);
+    inkCanvas.addEventListener("pointercancel", endStroke);
+    inkCanvas.addEventListener("pointerleave", (e)=>{
+      if(e.pointerId===inkActivePointerId) endStroke(e);
+      hideInkCursor();
+    });
+  }
+
+  function setPenMode(on){
+    penMode = on;
+    $("penBtn").classList.toggle("active", on);
+    if(inkCanvas) inkCanvas.classList.toggle("inactive", !penMode);
+    if(on){ closeSettings(); openInkPop(); } else { closeInkPop(); hideInkCursor(); }
+  }
+  // no shared #overlay here on purpose: it sits above the ink canvas
+  // (z-index 50 vs 5) and would silently block every drawing gesture
+  // while the toolbar is open, since pen mode keeps the toolbar open
+  // the whole time you're drawing.
+  function openInkPop(){ $("inkPop").classList.add("show"); }
+  function closeInkPop(){ $("inkPop").classList.remove("show"); }
+  $("penBtn").addEventListener("click", (e)=>{ e.stopPropagation(); setPenMode(!penMode); });
+
+  document.querySelectorAll(".ink-swatch[data-ink-color]").forEach(sw=>{
+    sw.addEventListener("click", ()=>{
+      inkTool = "pen"; inkColor = sw.dataset.inkColor;
+      document.querySelectorAll(".ink-swatch").forEach(s=>s.classList.remove("active"));
+      sw.classList.add("active");
+    });
+  });
+  $("inkEraserBtn").addEventListener("click", ()=>{
+    inkTool = "eraser";
+    document.querySelectorAll(".ink-swatch").forEach(s=>s.classList.remove("active"));
+    $("inkEraserBtn").classList.add("active");
+  });
+  document.querySelectorAll(".ink-size-btn").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      inkSize = parseFloat(b.dataset.inkSize);
+      document.querySelectorAll(".ink-size-btn").forEach(x=>x.classList.remove("active"));
+      b.classList.add("active");
+    });
+  });
+  $("inkClearBtn").addEventListener("click", ()=>{
+    inkStrokes = [];
+    saveInkForChapter();
+    redrawInk();
+  });
+
+  window.addEventListener("resize", ()=>{
+    if(readerScreenVisible()) resizeInkCanvas();
+  });
+
+  /* ---------------- PWA: service worker registration ---------------- */
+  if("serviceWorker" in navigator){
+    window.addEventListener("load", ()=>{
+      navigator.serviceWorker.register("./sw.js").then(reg=>{
+        // once a new shell takes over, reload once so the user gets it immediately
+        let reloaded = false;
+        reg.addEventListener("updatefound", ()=>{
+          const installing = reg.installing;
+          if(!installing) return;
+          installing.addEventListener("statechange", ()=>{
+            if(installing.state === "activated" && navigator.serviceWorker.controller && !reloaded){
+              reloaded = true;
+              location.reload();
+            }
+          });
+        });
+      }).catch(()=>{});
+    });
+  }
+
+  /* ---------------- init ---------------- */
+  (async function init(){
+    await loadLibrary();
+    markLibraryReady();
+    renderAll();
+  })();
+
+})();
+</script>
+</body>
+</html>

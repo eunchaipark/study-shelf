@@ -1,0 +1,21 @@
+{
+  "name": "Study Shelf",
+  "short_name": "Study Shelf",
+  "description": "업로드한 마크다운 파일을 챕터 단위로 넘겨 읽는 개인 서재 앱",
+  "id": "/",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
+  "lang": "ko",
+  "dir": "ltr",
+  "background_color": "#F7F5F2",
+  "theme_color": "#F7F5F2",
+  "categories": ["books", "productivity", "utilities"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
