@@ -80,17 +80,25 @@
   #libraryScreen{background:var(--bg-app);}
 
   .lib-topbar{
-    display:flex; align-items:center; gap:var(--sp-3);
-    padding:var(--sp-4) var(--sp-5); padding-top:calc(var(--sp-4) + env(safe-area-inset-top));
+    display:flex; align-items:center; gap:var(--sp-2);
+    padding:var(--sp-4) var(--sp-4); padding-top:calc(var(--sp-4) + env(safe-area-inset-top));
     border-bottom:1px solid var(--line);
     flex:0 0 auto; background:var(--surface);
   }
-  .lib-brand{font-family:var(--ui-font); font-weight:800; font-size:14px; letter-spacing:.05em; color:var(--accent-500); text-transform:uppercase; line-height:1.15; white-space:nowrap;}
+  .lib-brand{font-family:var(--ui-font); font-weight:800; font-size:14px; letter-spacing:.05em; color:var(--accent-500); text-transform:uppercase; line-height:1.15; white-space:nowrap; flex:0 0 auto;}
   .lib-spacer{flex:1;}
   .btn{
-    display:inline-flex; align-items:center; gap:var(--sp-2); border:none; border-radius:var(--r-sm);
-    font-size:13px; font-weight:600; padding:10px 15px; white-space:nowrap;
+    display:inline-flex; align-items:center; gap:6px; border:none; border-radius:var(--r-sm);
+    font-size:13px; font-weight:600; padding:10px 13px; white-space:nowrap; flex:0 0 auto;
     transition:background-color .15s var(--ease), border-color .15s var(--ease), transform .15s var(--ease), box-shadow .15s var(--ease);
+  }
+  /* narrow phones (~360px and under is the most common Android width): tighten
+     the topbar so both action buttons stay fully on-screen next to the brand */
+  @media (max-width:400px){
+    .lib-topbar{gap:6px;}
+    .lib-brand{font-size:12px; letter-spacing:.03em;}
+    .btn{padding:9px 9px; font-size:12px; gap:5px;}
+    .btn .icon{width:16px; height:16px;}
   }
   .btn-primary{background:var(--accent-400); color:#fffaf6; box-shadow:var(--shadow-sm);}
   .btn-primary:active{background:var(--accent-500); transform:translateY(1px); box-shadow:none;}
@@ -1290,6 +1298,11 @@
 
   /* ---------------- PWA: service worker registration ---------------- */
   if("serviceWorker" in navigator){
+    // Only reload when an *update* replaces an already-controlling worker.
+    // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
+    // become non-null right after activation even on a brand-new install — so
+    // without this check every first-ever visit would trigger a surprise reload.
+    const hadControllerBeforeRegister = !!navigator.serviceWorker.controller;
     window.addEventListener("load", ()=>{
       navigator.serviceWorker.register("./sw.js").then(reg=>{
         // once a new shell takes over, reload once so the user gets it immediately
@@ -1298,7 +1311,7 @@
           const installing = reg.installing;
           if(!installing) return;
           installing.addEventListener("statechange", ()=>{
-            if(installing.state === "activated" && navigator.serviceWorker.controller && !reloaded){
+            if(installing.state === "activated" && hadControllerBeforeRegister && !reloaded){
               reloaded = true;
               location.reload();
             }
