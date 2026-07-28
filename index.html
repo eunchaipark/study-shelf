@@ -109,6 +109,64 @@
     .btn-ghost:hover{border-color:var(--text-400); background:var(--bg-sunken);}
   }
 
+  .lib-search-bar{
+    display:flex; flex-wrap:wrap; align-items:center; gap:8px;
+    padding:10px 16px; border-bottom:1px solid var(--line); background:var(--surface); flex:0 0 auto;
+  }
+  .search-field{position:relative; flex:1 1 200px; min-width:140px; display:flex; align-items:center;}
+  .search-field .icon{position:absolute; left:10px; width:16px; height:16px; color:var(--text-400); pointer-events:none;}
+  .search-field input{
+    width:100%; background:var(--bg-sunken); border:1px solid transparent; color:var(--text-900);
+    border-radius:var(--r-sm); padding:9px 32px; font-size:13.5px;
+    transition:border-color .15s var(--ease), background-color .15s var(--ease);
+  }
+  .search-field input::placeholder{color:var(--text-400);}
+  .search-field input:focus{outline:none; background:var(--surface); border-color:var(--accent-400); box-shadow:0 0 0 3px var(--accent-wash);}
+  .search-clear{
+    position:absolute; right:6px; width:22px; height:22px; border-radius:50%; border:none; padding:0;
+    background:var(--bg-sunken-2); color:var(--text-500); display:flex; align-items:center; justify-content:center;
+  }
+  .search-clear .icon{width:12px; height:12px;}
+  .search-clear.hidden{display:none;}
+
+  .sort-select{
+    background:var(--bg-sunken); border:1px solid transparent; color:var(--text-700);
+    border-radius:var(--r-sm); padding:9px 10px; font-size:12.5px; font-weight:600; flex:0 0 auto;
+  }
+  .sort-select:focus{outline:none; border-color:var(--accent-400);}
+
+  .density-toggle{display:flex; gap:2px; background:var(--bg-sunken); border-radius:var(--r-sm); padding:2px; flex:0 0 auto;}
+  .density-btn{width:30px; height:30px; border-radius:6px; border:none; background:transparent; color:var(--text-500); display:flex; align-items:center; justify-content:center;}
+  .density-btn .icon{width:16px; height:16px;}
+  .density-btn.active{background:var(--surface); color:var(--accent-500); box-shadow:var(--shadow-sm);}
+
+  .continue-section{margin-bottom:20px;}
+  .continue-head{font-size:11.5px; font-weight:700; color:var(--text-500); text-transform:uppercase; letter-spacing:.08em; margin-bottom:10px;}
+  .continue-row{display:flex; gap:10px; overflow-x:auto; padding-bottom:4px; -webkit-overflow-scrolling:touch; scroll-snap-type:x proximity;}
+  .continue-card{
+    flex:0 0 auto; width:172px; scroll-snap-align:start; text-align:left; cursor:pointer;
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md); padding:12px;
+    box-shadow:var(--shadow-sm); display:flex; flex-direction:column; gap:8px;
+    transition:border-color .15s var(--ease), transform .15s var(--ease), box-shadow .15s var(--ease);
+  }
+  @media (hover:hover) and (pointer:fine){
+    .continue-card:hover{border-color:var(--line-strong); box-shadow:var(--shadow-md); transform:translateY(-1px);}
+  }
+  .continue-card .title{
+    font-size:13px; font-weight:600; color:var(--text-900); line-height:1.4; min-height:2.8em;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+  }
+  .continue-card .progress-bar{height:4px; border-radius:99px; background:var(--bg-sunken); overflow:hidden;}
+  .continue-card .progress-bar i{display:block; height:100%; background:linear-gradient(90deg, var(--accent-500), var(--accent-300)); border-radius:99px;}
+  .continue-card .pct{font-size:11px; color:var(--accent-500); font-weight:700; font-variant-numeric:tabular-nums;}
+
+  .file-grid.compact .file-card{padding:8px 10px; gap:10px;}
+  .file-grid.compact .file-card .doc-icon{width:30px; height:30px;}
+  .file-grid.compact .file-card .doc-icon .icon{width:15px; height:15px;}
+  .file-grid.compact .file-card .name{font-size:13.5px;}
+  .file-grid.compact .file-card .meta{margin-top:2px;}
+  .file-grid.compact .file-card .progress-bar{margin-top:6px; height:3px;}
+
   .lib-body{flex:1; display:flex; flex-direction:column; min-height:0; position:relative;}
 
   .folder-rail{
@@ -363,6 +421,7 @@
   @media (min-width:960px){
     .lib-main{padding:28px 40px 100px;}
     .file-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:var(--sp-3);}
+    .file-grid.compact{grid-template-columns:repeat(auto-fill, minmax(240px, 1fr));}
   }
 </style>
 </head>
@@ -384,9 +443,34 @@
       </button>
     </div>
 
+    <div class="lib-search-bar">
+      <div class="search-field">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="text" id="searchInput" placeholder="제목으로 검색" autocomplete="off">
+        <button class="search-clear hidden" id="searchClear" aria-label="검색어 지우기">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <select class="sort-select" id="sortSelect" aria-label="정렬 기준">
+        <option value="recent">최근 순</option>
+        <option value="name">이름순</option>
+        <option value="added">추가된 순</option>
+        <option value="progress">진행률순</option>
+      </select>
+      <div class="density-toggle" role="group" aria-label="보기 방식">
+        <button class="density-btn" data-density="comfortable" aria-label="카드형으로 보기">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg>
+        </button>
+        <button class="density-btn" data-density="compact" aria-label="목록형으로 보기">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+      </div>
+    </div>
+
     <div class="lib-body" id="libBody">
       <div class="folder-rail" id="folderRail"></div>
       <div class="lib-main" id="libMain">
+        <div id="continueSection"></div>
         <div id="fileList"></div>
       </div>
 
@@ -544,9 +628,12 @@
 
   /* ---------------- library state ---------------- */
   let folders = [];   // [{id, name, parentId}]  parentId=null -> root-level folder
-  let files = [];     // [{id, name, title, folderId, chapterCount, updatedTs, progress:{chapterIdx,fontSize,theme}}]
+  let files = [];     // [{id, name, title, folderId, chapterCount, createdTs, updatedTs, progress:{chapterIdx,fontSize,theme}}]
   let libView = "browse"; // 'browse' | 'all' | 'uncategorized'
   let folderPath = [];    // folder id trail for the drill-down view; [] = library root
+  let searchQuery = "";   // when non-empty, overrides libView with a flat title search
+  let sortMode = "recent"; // 'recent' | 'name' | 'added' | 'progress'
+  let density = "comfortable"; // 'comfortable' | 'compact'
 
   // IndexedDB's initial open+read is async, so a file dropped/uploaded in the
   // first instant after page load could otherwise race loadLibrary()'s
@@ -561,6 +648,21 @@
   }
   async function persistFolders(){ await S.setJSON("app:folders", folders); }
   async function persistFiles(){ await S.setJSON("app:files", files); }
+
+  async function loadPrefs(){
+    const prefs = await S.getJSON("app:prefs", {});
+    sortMode = prefs.sortMode || "recent";
+    density = prefs.density || "comfortable";
+  }
+  async function persistPrefs(){ await S.setJSON("app:prefs", {sortMode, density}); }
+
+  function sortFiles(arr){
+    const a = arr.slice();
+    if(sortMode==="name") return a.sort((x,y)=> x.title.localeCompare(y.title, "ko"));
+    if(sortMode==="added") return a.sort((x,y)=> (y.createdTs||y.updatedTs) - (x.createdTs||x.updatedTs));
+    if(sortMode==="progress") return a.sort((x,y)=> (((y.progress&&y.progress.pct)||0)) - (((x.progress&&x.progress.pct)||0)));
+    return a.sort((x,y)=> y.updatedTs - x.updatedTs); // 'recent'
+  }
 
   function closeAllOverlays(){
     $("overlay").classList.remove("show");
@@ -600,14 +702,14 @@
     const all = document.createElement("button");
     all.className = "folder-chip" + (libView==="all" ? " active":"");
     all.innerHTML = "전체 <span class=\"count\">"+files.length+"</span>";
-    all.addEventListener("click", ()=>{ libView="all"; renderAll(); });
+    all.addEventListener("click", ()=>{ resetSearch(); libView="all"; renderAll(); });
     pinned.appendChild(all);
 
     const uncatCount = files.filter(f=>!f.folderId).length;
     const uncat = document.createElement("button");
     uncat.className = "folder-chip" + (libView==="uncategorized" ? " active":"");
     uncat.innerHTML = "미분류 <span class=\"count\">"+uncatCount+"</span>";
-    uncat.addEventListener("click", ()=>{ libView="uncategorized"; renderAll(); });
+    uncat.addEventListener("click", ()=>{ resetSearch(); libView="uncategorized"; renderAll(); });
     pinned.appendChild(uncat);
 
     const add = document.createElement("button");
@@ -616,6 +718,17 @@
     add.addEventListener("click", ()=> openNewFolderModal());
     pinned.appendChild(add);
     rail.appendChild(pinned);
+
+    if(searchQuery.trim()){
+      const note = document.createElement("div");
+      note.className = "rail-crumbs";
+      const label = document.createElement("span");
+      label.className = "crumb-item active";
+      label.textContent = "검색 결과";
+      note.appendChild(label);
+      rail.appendChild(note);
+      return;
+    }
 
     // Breadcrumb + subfolder chips stay visible no matter which pinned filter
     // (전체/미분류) is active, so switching to a flat filter never strands you
@@ -657,13 +770,40 @@
     }
   }
 
+  /* ---------------- continue-reading strip ---------------- */
+  function renderContinue(){
+    const el = $("continueSection");
+    if(searchQuery.trim()){ el.innerHTML = ""; return; }
+    const candidates = files
+      .filter(f=> f.progress && f.progress.pct > 0 && f.progress.pct < 0.98)
+      .sort((a,b)=> b.updatedTs - a.updatedTs)
+      .slice(0, 6);
+    if(candidates.length===0){ el.innerHTML = ""; return; }
+    el.innerHTML = '<div class="continue-head">이어보기</div><div class="continue-row"></div>';
+    const row = el.querySelector(".continue-row");
+    candidates.forEach(f=>{
+      const pct = Math.round(f.progress.pct*100);
+      const card = document.createElement("button");
+      card.className = "continue-card";
+      card.innerHTML =
+        '<div class="title">'+escapeHtml(f.title)+'</div>'+
+        '<div class="progress-bar"><i style="width:'+pct+'%"></i></div>'+
+        '<div class="pct">'+pct+'% 읽음</div>';
+      card.addEventListener("click", ()=> openBook(f.id));
+      row.appendChild(card);
+    });
+  }
+
   /* ---------------- file list ---------------- */
   function visibleFiles(){
-    const sorted = (arr) => arr.slice().sort((a,b)=>b.updatedTs-a.updatedTs);
-    if(libView==="all") return sorted(files);
-    if(libView==="uncategorized") return sorted(files.filter(f=>!f.folderId));
+    if(searchQuery.trim()){
+      const q = searchQuery.trim().toLowerCase();
+      return sortFiles(files.filter(f=> f.title.toLowerCase().includes(q)));
+    }
+    if(libView==="all") return sortFiles(files);
+    if(libView==="uncategorized") return sortFiles(files.filter(f=>!f.folderId));
     const pid = currentParentId();
-    return sorted(files.filter(f=>(f.folderId||null) === pid));
+    return sortFiles(files.filter(f=>(f.folderId||null) === pid));
   }
 
   function renderFileList(){
@@ -671,6 +811,16 @@
     const vis = visibleFiles();
     list.innerHTML = "";
     if(vis.length===0){
+      if(searchQuery.trim()){
+        const empty = document.createElement("div");
+        empty.className = "empty-state";
+        empty.innerHTML =
+          '<svg class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>'+
+          '<strong>검색 결과가 없어요</strong>'+
+          '<span>"'+escapeHtml(searchQuery.trim())+'"와 일치하는 제목을 찾지 못했어요.</span>';
+        list.appendChild(empty);
+        return;
+      }
       const hasKids = libView==="browse" && childFolders(currentParentId()).length>0;
       if(hasKids){
         const atRoot = folderPath.length===0;
@@ -691,7 +841,7 @@
       return;
     }
     const grid = document.createElement("div");
-    grid.className = "file-grid";
+    grid.className = "file-grid" + (density==="compact" ? " compact" : "");
     vis.forEach(f=>{
       const prog = f.progress || {};
       const pct = typeof prog.pct === "number" ? Math.round(prog.pct*100) : 0;
@@ -720,7 +870,46 @@
     list.appendChild(grid);
   }
 
-  function renderAll(){ renderFolderRail(); renderFileList(); }
+  function renderAll(){ renderFolderRail(); renderContinue(); renderFileList(); }
+
+  /* ---------------- search / sort / density controls ---------------- */
+  const searchInput = $("searchInput");
+  const searchClearBtn = $("searchClear");
+  function resetSearch(){
+    if(!searchQuery) return;
+    searchQuery = "";
+    searchInput.value = "";
+    searchClearBtn.classList.add("hidden");
+  }
+  searchInput.addEventListener("input", ()=>{
+    searchQuery = searchInput.value;
+    searchClearBtn.classList.toggle("hidden", !searchQuery);
+    renderAll();
+  });
+  searchClearBtn.addEventListener("click", ()=>{
+    resetSearch();
+    renderAll();
+    searchInput.focus();
+  });
+
+  const sortSelect = $("sortSelect");
+  sortSelect.addEventListener("change", ()=>{
+    sortMode = sortSelect.value;
+    persistPrefs();
+    renderAll();
+  });
+
+  function updateDensityButtons(){
+    document.querySelectorAll(".density-btn").forEach(b=> b.classList.toggle("active", b.dataset.density===density));
+  }
+  document.querySelectorAll(".density-btn").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      density = b.dataset.density;
+      updateDensityButtons();
+      persistPrefs();
+      renderFileList();
+    });
+  });
 
   /* ---------------- new folder modal ---------------- */
   function openNewFolderModal(){
@@ -867,6 +1056,7 @@
         id, name:file.name, title,
         folderId: currentParentId(),
         chapterCount: chapters.length,
+        createdTs: Date.now(),
         updatedTs: Date.now(),
         progress: {chapterIdx:0, pct:0, fontSize:18, theme:"light"}
       });
@@ -1324,7 +1514,10 @@
   /* ---------------- init ---------------- */
   (async function init(){
     await loadLibrary();
+    await loadPrefs();
     markLibraryReady();
+    sortSelect.value = sortMode;
+    updateDensityButtons();
     renderAll();
   })();
 
