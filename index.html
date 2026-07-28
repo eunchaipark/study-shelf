@@ -92,13 +92,15 @@
     font-size:13px; font-weight:600; padding:10px 13px; white-space:nowrap; flex:0 0 auto;
     transition:background-color .15s var(--ease), border-color .15s var(--ease), transform .15s var(--ease), box-shadow .15s var(--ease);
   }
-  /* narrow phones (~360px and under is the most common Android width): tighten
-     the topbar so both action buttons stay fully on-screen next to the brand */
+  /* narrow phones (~360px and under is the most common Android width): the
+     secondary action collapses to icon-only rather than shrinking every
+     button's padding/font, so both buttons keep the same visual weight as
+     the rest of the UI instead of looking pinched */
   @media (max-width:400px){
-    .lib-topbar{gap:6px;}
+    .lib-topbar{gap:8px;}
     .lib-brand{font-size:12px; letter-spacing:.03em;}
-    .btn{padding:9px 9px; font-size:12px; gap:5px;}
-    .btn .icon{width:16px; height:16px;}
+    .btn-ghost{padding:10px; gap:0;}
+    .btn-ghost .btn-label{display:none;}
   }
   .btn-primary{background:var(--accent-400); color:#fffaf6; box-shadow:var(--shadow-sm);}
   .btn-primary:active{background:var(--accent-500); transform:translateY(1px); box-shadow:none;}
@@ -110,10 +112,12 @@
   }
 
   .lib-search-bar{
-    display:flex; flex-wrap:wrap; align-items:center; gap:8px;
+    display:flex; flex-direction:column; gap:8px;
     padding:10px 16px; border-bottom:1px solid var(--line); background:var(--surface); flex:0 0 auto;
   }
-  .search-field{position:relative; flex:1 1 200px; min-width:140px; display:flex; align-items:center;}
+  .search-row{display:flex;}
+  .controls-row{display:flex; align-items:center; gap:8px;}
+  .search-field{position:relative; flex:1; display:flex; align-items:center;}
   .search-field .icon{position:absolute; left:10px; width:16px; height:16px; color:var(--text-400); pointer-events:none;}
   .search-field input{
     width:100%; background:var(--bg-sunken); border:1px solid transparent; color:var(--text-900);
@@ -130,10 +134,13 @@
   .search-clear.hidden{display:none;}
 
   .sort-select{
-    background:var(--bg-sunken); border:1px solid transparent; color:var(--text-700);
-    border-radius:var(--r-sm); padding:9px 10px; font-size:12.5px; font-weight:600; flex:0 0 auto;
+    flex:1; min-width:0; background:var(--bg-sunken); border:1px solid transparent; color:var(--text-700);
+    border-radius:var(--r-sm); padding:9px 30px 9px 12px; font-size:12.5px; font-weight:600;
+    appearance:none; -webkit-appearance:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238B8177' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m6 9 6 6 6-6'/></svg>");
+    background-repeat:no-repeat; background-position:right 8px center; background-size:14px;
   }
-  .sort-select:focus{outline:none; border-color:var(--accent-400);}
+  .sort-select:focus{outline:none; border-color:var(--accent-400); box-shadow:0 0 0 3px var(--accent-wash);}
 
   .density-toggle{display:flex; gap:2px; background:var(--bg-sunken); border-radius:var(--r-sm); padding:2px; flex:0 0 auto;}
   .density-btn{width:30px; height:30px; border-radius:6px; border:none; background:transparent; color:var(--text-500); display:flex; align-items:center; justify-content:center;}
@@ -417,6 +424,10 @@
     .folder-chip{justify-content:flex-start; border-radius:var(--r-sm);}
     .lib-main{padding:24px 32px 100px;}
     .read-inner{padding-top:60px;}
+    .lib-search-bar{flex-direction:row; align-items:center; padding:12px 20px;}
+    .search-row{flex:1;}
+    .controls-row{flex:0 0 auto;}
+    .sort-select{flex:0 0 auto;}
   }
   @media (min-width:960px){
     .lib-main{padding:28px 40px 100px;}
@@ -435,35 +446,39 @@
       <div class="lib-spacer"></div>
       <button class="btn btn-ghost" id="newFolderBtn">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/><path d="M12 11v4M10 13h4"/></svg>
-        새 폴더
+        <span class="btn-label">새 폴더</span>
       </button>
       <button class="btn btn-primary" id="uploadBtn">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="M7 8l5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
-        파일 업로드
+        <span class="btn-label">파일 업로드</span>
       </button>
     </div>
 
     <div class="lib-search-bar">
-      <div class="search-field">
-        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-        <input type="text" id="searchInput" placeholder="제목으로 검색" autocomplete="off">
-        <button class="search-clear hidden" id="searchClear" aria-label="검색어 지우기">
-          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
-        </button>
+      <div class="search-row">
+        <div class="search-field">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input type="text" id="searchInput" placeholder="제목으로 검색" autocomplete="off">
+          <button class="search-clear hidden" id="searchClear" aria-label="검색어 지우기">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
       </div>
-      <select class="sort-select" id="sortSelect" aria-label="정렬 기준">
-        <option value="recent">최근 순</option>
-        <option value="name">이름순</option>
-        <option value="added">추가된 순</option>
-        <option value="progress">진행률순</option>
-      </select>
-      <div class="density-toggle" role="group" aria-label="보기 방식">
-        <button class="density-btn" data-density="comfortable" aria-label="카드형으로 보기">
-          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg>
-        </button>
-        <button class="density-btn" data-density="compact" aria-label="목록형으로 보기">
-          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-        </button>
+      <div class="controls-row">
+        <select class="sort-select" id="sortSelect" aria-label="정렬 기준">
+          <option value="recent">최근 순</option>
+          <option value="name">이름순</option>
+          <option value="added">추가된 순</option>
+          <option value="progress">진행률순</option>
+        </select>
+        <div class="density-toggle" role="group" aria-label="보기 방식">
+          <button class="density-btn" data-density="comfortable" aria-label="카드형으로 보기">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg>
+          </button>
+          <button class="density-btn" data-density="compact" aria-label="목록형으로 보기">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          </button>
+        </div>
       </div>
     </div>
 
