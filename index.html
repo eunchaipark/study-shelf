@@ -147,26 +147,6 @@
   .density-btn .icon{width:16px; height:16px;}
   .density-btn.active{background:var(--surface); color:var(--accent-500); box-shadow:var(--shadow-sm);}
 
-  .continue-section{margin-bottom:20px;}
-  .continue-head{font-size:11.5px; font-weight:700; color:var(--text-500); text-transform:uppercase; letter-spacing:.08em; margin-bottom:10px;}
-  .continue-row{display:flex; gap:10px; overflow-x:auto; padding-bottom:4px; -webkit-overflow-scrolling:touch; scroll-snap-type:x proximity;}
-  .continue-card{
-    flex:0 0 auto; width:172px; scroll-snap-align:start; text-align:left; cursor:pointer;
-    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md); padding:12px;
-    box-shadow:var(--shadow-sm); display:flex; flex-direction:column; gap:8px;
-    transition:border-color .15s var(--ease), transform .15s var(--ease), box-shadow .15s var(--ease);
-  }
-  @media (hover:hover) and (pointer:fine){
-    .continue-card:hover{border-color:var(--line-strong); box-shadow:var(--shadow-md); transform:translateY(-1px);}
-  }
-  .continue-card .title{
-    font-size:13px; font-weight:600; color:var(--text-900); line-height:1.4; min-height:2.8em;
-    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
-  }
-  .continue-card .progress-bar{height:4px; border-radius:99px; background:var(--bg-sunken); overflow:hidden;}
-  .continue-card .progress-bar i{display:block; height:100%; background:linear-gradient(90deg, var(--accent-500), var(--accent-300)); border-radius:99px;}
-  .continue-card .pct{font-size:11px; color:var(--accent-500); font-weight:700; font-variant-numeric:tabular-nums;}
-
   .file-grid.compact .file-card{padding:8px 10px; gap:10px;}
   .file-grid.compact .file-card .doc-icon{width:30px; height:30px;}
   .file-grid.compact .file-card .doc-icon .icon{width:15px; height:15px;}
@@ -494,7 +474,6 @@
     <div class="lib-body" id="libBody">
       <div class="folder-rail" id="folderRail"></div>
       <div class="lib-main" id="libMain">
-        <div id="continueSection"></div>
         <div id="fileList"></div>
       </div>
 
@@ -807,30 +786,6 @@
     }
   }
 
-  /* ---------------- continue-reading strip ---------------- */
-  function renderContinue(){
-    const el = $("continueSection");
-    if(searchQuery.trim()){ el.innerHTML = ""; return; }
-    const candidates = files
-      .filter(f=> f.progress && f.progress.pct > 0 && f.progress.pct < 0.98)
-      .sort((a,b)=> b.updatedTs - a.updatedTs)
-      .slice(0, 6);
-    if(candidates.length===0){ el.innerHTML = ""; return; }
-    el.innerHTML = '<div class="continue-head">이어보기</div><div class="continue-row"></div>';
-    const row = el.querySelector(".continue-row");
-    candidates.forEach(f=>{
-      const pct = Math.round(f.progress.pct*100);
-      const card = document.createElement("button");
-      card.className = "continue-card";
-      card.innerHTML =
-        '<div class="title">'+escapeHtml(f.title)+'</div>'+
-        '<div class="progress-bar"><i style="width:'+pct+'%"></i></div>'+
-        '<div class="pct">'+pct+'% 읽음</div>';
-      card.addEventListener("click", ()=> openBook(f.id));
-      row.appendChild(card);
-    });
-  }
-
   /* ---------------- file list ---------------- */
   function visibleFiles(){
     if(searchQuery.trim()){
@@ -907,7 +862,7 @@
     list.appendChild(grid);
   }
 
-  function renderAll(){ renderFolderRail(); renderContinue(); renderFileList(); }
+  function renderAll(){ renderFolderRail(); renderFileList(); }
 
   /* ---------------- search / sort / density controls ---------------- */
   const searchInput = $("searchInput");
