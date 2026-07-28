@@ -1563,6 +1563,13 @@
   });
 
   /* ---------------- PWA: service worker registration ---------------- */
+  // GitHub Pages serves sw.js with Cache-Control: max-age=600, so a plain
+  // "./sw.js" registration can keep re-checking a stale cached copy for up
+  // to 10 minutes after a deploy and never notice the update. Bumping this
+  // query string on every deploy (alongside the cache names in sw.js) forces
+  // a genuine network fetch every time, since the browser has never cached
+  // that exact URL before.
+  const SW_VERSION = "10";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
@@ -1570,7 +1577,7 @@
     // without this check every first-ever visit would trigger a surprise reload.
     const hadControllerBeforeRegister = !!navigator.serviceWorker.controller;
     window.addEventListener("load", ()=>{
-      navigator.serviceWorker.register("./sw.js").then(reg=>{
+      navigator.serviceWorker.register("./sw.js?v="+SW_VERSION).then(reg=>{
         // once a new shell takes over, reload once so the user gets it immediately
         let reloaded = false;
         reg.addEventListener("updatefound", ()=>{
