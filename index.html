@@ -336,6 +336,7 @@
 
   .ink-canvas{position:absolute; top:0; left:0; width:100%; height:100%; touch-action:none; z-index:5;}
   .ink-canvas.inactive{pointer-events:none;}
+  .ink-canvas.highlight-layer{z-index:4; pointer-events:none; mix-blend-mode:multiply;}
   .ink-cursor{position:fixed; top:0; left:0; pointer-events:none; border-radius:50%; transform:translate(-50%,-50%); z-index:200; display:none; box-sizing:border-box;}
 
   [data-theme="light"] .read-scroll{ --read-bg:#faf9f6; --read-text:#1d1e21; }
@@ -377,6 +378,8 @@
   .toc-list{flex:1; overflow-y:auto; padding:8px;}
   .toc-item{display:flex; align-items:baseline; gap:10px; width:100%; text-align:left; background:transparent; border:none; color:var(--text-700); padding:11px 10px; border-radius:var(--r-sm); font-size:14px; border-left:2px solid transparent; transition:background-color .15s var(--ease), border-color .15s var(--ease);}
   .toc-item .n{color:var(--text-400); font-size:11.5px; font-variant-numeric:tabular-nums; flex:0 0 20px;}
+  .toc-item .toc-title{flex:1; min-width:0;}
+  .toc-item .toc-ink-dot{width:6px; height:6px; border-radius:50%; background:var(--accent-400); flex:0 0 auto; align-self:center; margin-left:2px;}
   .toc-item.active{background:var(--accent-wash); color:var(--accent-500); border-left-color:var(--accent-400);}
   @media (hover:hover) and (pointer:fine){ .toc-item:not(.active):hover{background:var(--bg-sunken);} }
 
@@ -406,9 +409,15 @@
   .ink-swatch.ink-eraser{background:var(--bg-sunken); color:var(--text-500); display:flex; align-items:center; justify-content:center; border-color:var(--line-strong);}
   .ink-swatch.ink-eraser .icon{width:15px; height:15px;}
   .ink-swatch.ink-eraser.active{background:var(--bg-sunken-2); color:var(--text-900); box-shadow:0 0 0 2px var(--surface), 0 0 0 4px var(--text-700);}
+  .ink-swatch.ink-highlighter{width:34px; height:22px; border-radius:6px;}
+  .ink-swatch.ink-highlighter.active{box-shadow:0 0 0 2px var(--surface), 0 0 0 4px var(--text-700);}
   .ink-size-row{display:flex; gap:8px; margin-bottom:18px;}
   .ink-size-btn{flex:1; height:34px; border-radius:var(--r-sm); border:1px solid var(--line-strong); background:var(--surface); color:var(--text-500); font-size:14px; display:flex; align-items:center; justify-content:center; transition:all .15s var(--ease);}
   .ink-size-btn .dot{border-radius:50%; background:currentColor;}
+  .ink-actions-row{display:flex; gap:8px;}
+  .ink-actions-row .btn{flex:1; justify-content:center; padding:9px 10px; font-size:12.5px;}
+  .ink-actions-row .btn .icon{width:15px; height:15px;}
+  .ink-actions-row .btn:disabled{opacity:.4; pointer-events:none;}
   .ink-size-btn.active{border-color:var(--accent-400); color:var(--accent-500); background:var(--accent-wash);}
   .ink-clear-btn{width:100%; justify-content:center;}
 
@@ -542,7 +551,7 @@
     </div>
 
     <div class="pop ink-pop" id="inkPop">
-      <h5>펜 색상</h5>
+      <h5>펜</h5>
       <div class="ink-row">
         <button class="ink-swatch active" data-ink-color="#3F3A34" style="--sw:#3F3A34" aria-label="검정 펜"></button>
         <button class="ink-swatch" data-ink-color="#C97A45" style="--sw:#C97A45" aria-label="주황 펜"></button>
@@ -552,13 +561,26 @@
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20H8l-5-5a2 2 0 0 1 0-2.8l9-9a2 2 0 0 1 2.8 0l5.2 5.2a2 2 0 0 1 0 2.8L13 18"/></svg>
         </button>
       </div>
+      <h5>형광펜</h5>
+      <div class="ink-row">
+        <button class="ink-swatch ink-highlighter" data-ink-highlight="#F4C84A" style="--sw:#F4C84A" aria-label="노랑 형광펜"></button>
+        <button class="ink-swatch ink-highlighter" data-ink-highlight="#8FCB8A" style="--sw:#8FCB8A" aria-label="초록 형광펜"></button>
+        <button class="ink-swatch ink-highlighter" data-ink-highlight="#EE9DBB" style="--sw:#EE9DBB" aria-label="분홍 형광펜"></button>
+        <button class="ink-swatch ink-highlighter" data-ink-highlight="#8FB6E3" style="--sw:#8FB6E3" aria-label="파랑 형광펜"></button>
+      </div>
       <h5>굵기</h5>
       <div class="ink-size-row">
         <button class="ink-size-btn" data-ink-size="2.5"><span class="dot" style="width:6px;height:6px;"></span></button>
         <button class="ink-size-btn active" data-ink-size="4.5"><span class="dot" style="width:10px;height:10px;"></span></button>
         <button class="ink-size-btn" data-ink-size="8"><span class="dot" style="width:15px;height:15px;"></span></button>
       </div>
-      <button class="btn btn-ghost ink-clear-btn" id="inkClearBtn">이 챕터 지우기</button>
+      <div class="ink-actions-row">
+        <button class="btn btn-ghost" id="inkUndoBtn" disabled>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5A5.5 5.5 0 0 1 20 14.5v0A5.5 5.5 0 0 1 14.5 20H11"/></svg>
+          되돌리기
+        </button>
+        <button class="btn btn-ghost" id="inkClearBtn">전체 지우기</button>
+      </div>
     </div>
 
     <div class="drawer" id="drawer">
@@ -1211,10 +1233,12 @@
 
   function buildTOC(){
     tocList.innerHTML = "";
+    const inkChapters = (activeFile && activeFile.inkChapters) || [];
     activeChapters.forEach((c,i)=>{
       const b = document.createElement("button");
       b.className = "toc-item" + (i===chapterIdx ? " active":"");
-      b.innerHTML = '<span class="n">'+String(i+1).padStart(2,"0")+'</span><span>'+escapeHtml(c.title)+'</span>';
+      b.innerHTML = '<span class="n">'+String(i+1).padStart(2,"0")+'</span><span class="toc-title">'+escapeHtml(c.title)+'</span>'+
+        (inkChapters.includes(i) ? '<span class="toc-ink-dot" aria-label="필기 있음"></span>' : '');
       b.addEventListener("click", ()=>{ renderChapter(i); closeDrawer(); });
       tocList.appendChild(b);
     });
@@ -1267,7 +1291,7 @@
 
   function openDrawer(){ drawer.classList.add("show"); $("overlay").classList.add("show"); }
   function closeDrawer(){ drawer.classList.remove("show"); $("overlay").classList.remove("show"); }
-  $("tocBtn").addEventListener("click", openDrawer);
+  $("tocBtn").addEventListener("click", ()=>{ buildTOC(); openDrawer(); });
   $("overlay").addEventListener("click", ()=>{ closeDrawer(); closeSettings(); closeInkPop(); });
 
   function openSettings(){ settingsPop.classList.add("show"); $("overlay").classList.add("show"); }
@@ -1295,76 +1319,120 @@
   });
 
   /* ---------------- ink (handwriting) layer ----------------
-     A canvas overlay lives inside #readInner (so it scrolls together with the
-     chapter's own content) and stores strokes per file+chapter, normalized to
-     0..1 of the content box so they rescale when font size / width changes.
+     Two stacked canvases live inside #readInner (so they scroll with the
+     chapter's own content): a highlight layer (mix-blend-mode:multiply, so
+     marker strokes sit visually behind the text) and an ink layer on top for
+     pen/eraser. Strokes are stored per file+chapter, normalized to 0..1 of
+     the content box so they rescale when font size / width changes.
      Known limitation: a big font-size change reflows text non-uniformly, so
      ink follows along approximately rather than staying pixel-anchored to a
      specific word. */
   let inkCanvas = null, inkCtx = null;
+  let highlightCanvas = null, highlightCtx = null;
   let inkStrokes = [];
   let inkColor = "#3F3A34";
   let inkSize = 4.5;
-  let inkTool = "pen"; // 'pen' | 'eraser'
+  let inkTool = "pen"; // 'pen' | 'highlighter' | 'eraser'
   let penMode = false;
   let inkDrawing = null;
   let inkActivePointerId = null;
+  let inkActiveStylusId = null;   // palm rejection: pointerId of the stylus currently down
+  let inkLastPenActivityTs = 0;   // palm rejection: ignore touch shortly after/around pen use
 
   function inkKey(){ return activeFile ? "ink:"+activeFile.id+":"+chapterIdx : null; }
 
   async function loadInkForChapter(){
     const key = inkKey();
     inkStrokes = key ? await S.getJSON(key, []) : [];
+    updateInkUndoButton();
   }
   async function saveInkForChapter(){
     const key = inkKey();
-    if(key) await S.setJSON(key, inkStrokes);
+    if(!key || !activeFile) return;
+    await S.setJSON(key, inkStrokes);
+    const set = new Set(activeFile.inkChapters || []);
+    if(inkStrokes.length > 0) set.add(chapterIdx); else set.delete(chapterIdx);
+    activeFile.inkChapters = Array.from(set).sort((a,b)=>a-b);
+    await persistFiles();
   }
 
   function setupInkCanvas(){
     if(inkCanvas) inkCanvas.remove();
+    if(highlightCanvas) highlightCanvas.remove();
+    highlightCanvas = document.createElement("canvas");
+    highlightCanvas.className = "ink-canvas highlight-layer";
+    readInner.appendChild(highlightCanvas);
+    highlightCtx = highlightCanvas.getContext("2d");
+
     inkCanvas = document.createElement("canvas");
     inkCanvas.className = "ink-canvas" + (penMode ? "" : " inactive");
     readInner.appendChild(inkCanvas);
     inkCtx = inkCanvas.getContext("2d");
+
     wireInkPointerEvents();
     resizeInkCanvas();
   }
 
   function resizeInkCanvas(){
-    if(!inkCanvas) return;
+    if(!inkCanvas || !highlightCanvas) return;
     const w = readInner.clientWidth;
     const h = readInner.scrollHeight;
     const dpr = window.devicePixelRatio || 1;
-    inkCanvas.width = Math.max(1, Math.round(w*dpr));
-    inkCanvas.height = Math.max(1, Math.round(h*dpr));
-    inkCanvas.style.width = w+"px";
-    inkCanvas.style.height = h+"px";
+    [inkCanvas, highlightCanvas].forEach(c=>{
+      c.width = Math.max(1, Math.round(w*dpr));
+      c.height = Math.max(1, Math.round(h*dpr));
+      c.style.width = w+"px";
+      c.style.height = h+"px";
+    });
     inkCtx.setTransform(dpr,0,0,dpr,0,0);
+    highlightCtx.setTransform(dpr,0,0,dpr,0,0);
     redrawInk();
+  }
+
+  function ctxForTool(tool){ return tool==="highlighter" ? highlightCtx : inkCtx; }
+
+  function applyStrokeStyle(ctx, tool, color, width){
+    ctx.lineJoin = "round";
+    if(tool==="eraser"){
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = "#000";
+      ctx.lineWidth = width;
+      ctx.lineCap = "round";
+    } else if(tool==="highlighter"){
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = 0.45;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.lineCap = "butt";
+    } else {
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.lineCap = "round";
+    }
   }
 
   function paintStroke(stroke, w, h){
     if(stroke.points.length < 2) return;
-    inkCtx.save();
-    inkCtx.globalCompositeOperation = stroke.tool==="eraser" ? "destination-out" : "source-over";
-    inkCtx.strokeStyle = stroke.color;
-    inkCtx.lineWidth = stroke.width;
-    inkCtx.lineCap = "round";
-    inkCtx.lineJoin = "round";
-    inkCtx.beginPath();
+    const ctx = ctxForTool(stroke.tool);
+    ctx.save();
+    applyStrokeStyle(ctx, stroke.tool, stroke.color, stroke.width);
+    ctx.beginPath();
     stroke.points.forEach((p,i)=>{
       const x = p[0]*w, y = p[1]*h;
-      if(i===0) inkCtx.moveTo(x,y); else inkCtx.lineTo(x,y);
+      if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
     });
-    inkCtx.stroke();
-    inkCtx.restore();
+    ctx.stroke();
+    ctx.restore();
   }
 
   function redrawInk(){
-    if(!inkCtx || !inkCanvas) return;
+    if(!inkCtx || !highlightCtx) return;
     const w = readInner.clientWidth, h = readInner.scrollHeight;
     inkCtx.clearRect(0,0,w,h);
+    highlightCtx.clearRect(0,0,w,h);
     inkStrokes.forEach(s=> paintStroke(s, w, h));
   }
 
@@ -1375,8 +1443,22 @@
   }
 
   function strokeWidthFor(e){
+    if(inkTool==="eraser") return inkSize*2.4;
+    if(inkTool==="highlighter") return inkSize*3.2;
     const pressure = e.pressure && e.pressure>0 ? e.pressure : 0.5;
-    return inkTool==="eraser" ? inkSize*2.4 : inkSize*(0.6+pressure*0.8);
+    return inkSize*(0.6+pressure*0.8);
+  }
+
+  function undoLastStroke(){
+    if(inkStrokes.length===0) return;
+    inkStrokes.pop();
+    saveInkForChapter();
+    redrawInk();
+    updateInkUndoButton();
+  }
+  function updateInkUndoButton(){
+    const btn = $("inkUndoBtn");
+    if(btn) btn.disabled = inkStrokes.length===0;
   }
 
   // Brush-size cursor ring: only for pen/mouse (hover-capable pointers) — a
@@ -1401,9 +1483,16 @@
     el.style.left = e.clientX+"px";
     el.style.top = e.clientY+"px";
     if(inkTool==="eraser"){
+      el.style.borderRadius = "50%";
       el.style.border = "1.5px solid rgba(63,58,52,.55)";
       el.style.background = "rgba(63,58,52,.08)";
+    } else if(inkTool==="highlighter"){
+      el.style.borderRadius = "3px";
+      el.style.border = "1px solid rgba(63,58,52,.35)";
+      el.style.background = inkColor;
+      el.style.opacity = "0.5";
     } else {
+      el.style.borderRadius = "50%";
       el.style.border = "1px solid rgba(255,255,255,.65)";
       el.style.background = inkColor;
       el.style.opacity = "0.55";
@@ -1414,6 +1503,13 @@
   function wireInkPointerEvents(){
     inkCanvas.addEventListener("pointerdown", (e)=>{
       if(!penMode) return;
+      // Palm rejection: while (or just after) a stylus is in contact, ignore
+      // touch input entirely so a resting palm doesn't leave stray marks.
+      if(e.pointerType==="touch"){
+        const recentPen = Date.now()-inkLastPenActivityTs < 700;
+        if(inkActiveStylusId!==null || recentPen) return;
+      }
+      if(e.pointerType==="pen"){ inkActiveStylusId = e.pointerId; inkLastPenActivityTs = Date.now(); }
       e.preventDefault();
       inkActivePointerId = e.pointerId;
       try{ inkCanvas.setPointerCapture(e.pointerId); }catch(err){}
@@ -1423,6 +1519,7 @@
     });
     inkCanvas.addEventListener("pointermove", (e)=>{
       if(!penMode) return;
+      if(e.pointerType==="pen") inkLastPenActivityTs = Date.now();
       updateInkCursor(e, strokeWidthFor(e));
       if(!inkDrawing || e.pointerId !== inkActivePointerId) return;
       e.preventDefault();
@@ -1430,22 +1527,22 @@
       const pt = pointerToNorm(e);
       const prev = inkDrawing.points[inkDrawing.points.length-1];
       inkDrawing.points.push(pt);
-      inkCtx.save();
-      inkCtx.globalCompositeOperation = inkDrawing.tool==="eraser" ? "destination-out" : "source-over";
-      inkCtx.strokeStyle = inkDrawing.color;
-      inkCtx.lineWidth = inkDrawing.width;
-      inkCtx.lineCap = "round"; inkCtx.lineJoin = "round";
-      inkCtx.beginPath();
-      inkCtx.moveTo(prev[0]*w, prev[1]*h);
-      inkCtx.lineTo(pt[0]*w, pt[1]*h);
-      inkCtx.stroke();
-      inkCtx.restore();
+      const ctx = ctxForTool(inkDrawing.tool);
+      ctx.save();
+      applyStrokeStyle(ctx, inkDrawing.tool, inkDrawing.color, inkDrawing.width);
+      ctx.beginPath();
+      ctx.moveTo(prev[0]*w, prev[1]*h);
+      ctx.lineTo(pt[0]*w, pt[1]*h);
+      ctx.stroke();
+      ctx.restore();
     });
     const endStroke = (e)=>{
-      if(!inkDrawing || (e.pointerId!==undefined && e.pointerId!==inkActivePointerId)) return;
+      if(e && e.pointerType==="pen" && e.pointerId===inkActiveStylusId) inkActiveStylusId = null;
+      if(!inkDrawing || (e && e.pointerId!==undefined && e.pointerId!==inkActivePointerId)) return;
       if(inkDrawing.points.length>1){
         inkStrokes.push(inkDrawing);
         saveInkForChapter();
+        updateInkUndoButton();
       }
       inkDrawing = null;
       inkActivePointerId = null;
@@ -1479,6 +1576,13 @@
       sw.classList.add("active");
     });
   });
+  document.querySelectorAll(".ink-swatch[data-ink-highlight]").forEach(sw=>{
+    sw.addEventListener("click", ()=>{
+      inkTool = "highlighter"; inkColor = sw.dataset.inkHighlight;
+      document.querySelectorAll(".ink-swatch").forEach(s=>s.classList.remove("active"));
+      sw.classList.add("active");
+    });
+  });
   $("inkEraserBtn").addEventListener("click", ()=>{
     inkTool = "eraser";
     document.querySelectorAll(".ink-swatch").forEach(s=>s.classList.remove("active"));
@@ -1491,10 +1595,12 @@
       b.classList.add("active");
     });
   });
+  $("inkUndoBtn").addEventListener("click", undoLastStroke);
   $("inkClearBtn").addEventListener("click", ()=>{
     inkStrokes = [];
     saveInkForChapter();
     redrawInk();
+    updateInkUndoButton();
   });
 
   window.addEventListener("resize", ()=>{
