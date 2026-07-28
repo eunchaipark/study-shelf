@@ -1,8 +1,8 @@
 // 서재 — app-shell service worker.
 // Precaches the shell (HTML/CSS-in-HTML/JS/icons/vendor lib) so the reader still
 // opens offline; book content itself lives in IndexedDB, not here.
-const SHELL_CACHE = "seojae-shell-v3";
-const RUNTIME_CACHE = "seojae-runtime-v3";
+const SHELL_CACHE = "seojae-shell-v4";
+const RUNTIME_CACHE = "seojae-runtime-v4";
 const CURRENT_CACHES = [SHELL_CACHE, RUNTIME_CACHE];
 
 const SHELL_URLS = [

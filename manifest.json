@@ -2,7 +2,7 @@
   "name": "Study Shelf",
   "short_name": "Study Shelf",
   "description": "업로드한 마크다운 파일을 챕터 단위로 넘겨 읽는 개인 서재 앱",
-  "id": "/",
+  "id": ".",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
