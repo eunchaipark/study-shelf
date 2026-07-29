@@ -1570,7 +1570,25 @@
   // the whole time you're drawing.
   function openInkPop(){ $("inkPop").classList.add("show"); }
   function closeInkPop(){ $("inkPop").classList.remove("show"); }
-  $("penBtn").addEventListener("click", (e)=>{ e.stopPropagation(); setPenMode(!penMode); });
+  $("penBtn").addEventListener("click", (e)=>{
+    e.stopPropagation();
+    if(!penMode){ setPenMode(true); return; }
+    // pen is already selected: if the toolbar is showing, this tap means
+    // "I'm done" (turn drawing off); if it was already dismissed by an
+    // outside tap, just bring the tool options back without losing the
+    // selected pen/color.
+    if($("inkPop").classList.contains("show")) setPenMode(false);
+    else openInkPop();
+  });
+  // Tapping anywhere outside the toolbar dismisses just the toolbar — the
+  // pen stays selected and ready to draw, it just gets out of the way.
+  document.addEventListener("pointerdown", (e)=>{
+    if(!penMode) return;
+    const pop = $("inkPop");
+    if(!pop.classList.contains("show")) return;
+    if(pop.contains(e.target) || e.target.closest("#penBtn")) return;
+    closeInkPop();
+  });
 
   document.querySelectorAll(".ink-swatch[data-ink-color]").forEach(sw=>{
     sw.addEventListener("click", ()=>{
@@ -1623,7 +1641,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "11";
+  const SW_VERSION = "12";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
