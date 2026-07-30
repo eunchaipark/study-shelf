@@ -187,42 +187,26 @@
     background:var(--surface);
   }
   #railDynamic{display:flex; flex-direction:column; gap:10px; min-width:0;}
-  .rail-account{margin-top:auto; padding-top:10px;}
+  /* account control lives in the top bar as a small icon/avatar next to the
+     other header actions, not as a full row competing with folder chips for
+     space — full name/sync-state text only appears in the popup on tap. */
+  .lib-account{position:relative; flex:0 0 auto;}
   .account-signin-btn{
-    display:flex; align-items:center; justify-content:center; gap:8px; width:100%;
+    display:flex; align-items:center; justify-content:center; width:36px; height:36px;
     background:var(--bg-sunken); border:1px solid var(--line-strong); color:var(--text-700);
-    border-radius:var(--r-sm); padding:10px 12px; font-size:12.5px; font-weight:600;
-    transition:background-color .15s var(--ease), border-color .15s var(--ease);
+    border-radius:50%; transition:background-color .15s var(--ease), border-color .15s var(--ease);
   }
   @media (hover:hover) and (pointer:fine){ .account-signin-btn:hover{background:var(--bg-sunken-2); border-color:var(--text-400);} }
-  .account-signin-btn .icon{width:16px; height:16px;}
-  .account-error{font-size:11px; color:var(--danger); margin-top:6px; line-height:1.4; padding:0 2px;}
-  .account-row{display:flex; align-items:center; gap:9px; padding:6px; border-radius:var(--r-sm); transition:background-color .15s var(--ease);}
-  @media (hover:hover) and (pointer:fine){ .account-row:hover{background:var(--bg-sunken);} }
-  .account-avatar-wrap{position:relative; flex:0 0 auto;}
-  .account-avatar{width:30px; height:30px; border-radius:50%; display:block; background:var(--bg-sunken-2); object-fit:cover;}
-  .account-sync-dot{display:none; position:absolute; right:-1px; bottom:-1px; width:8px; height:8px; border-radius:50%; background:var(--text-400); border:2px solid var(--surface);}
+  .account-signin-btn .icon{width:17px; height:17px;}
+  .account-error-dot{position:absolute; right:-1px; bottom:-1px; width:9px; height:9px; border-radius:50%; background:var(--danger); border:2px solid var(--surface);}
+  .account-avatar-wrap{position:relative; display:block; width:36px; height:36px; border-radius:50%; border:none; background:none; padding:0;}
+  .account-avatar{width:36px; height:36px; border-radius:50%; display:block; background:var(--bg-sunken-2); object-fit:cover;}
+  .account-sync-dot{position:absolute; right:-1px; bottom:-1px; width:10px; height:10px; border-radius:50%; background:var(--text-400); border:2px solid var(--surface);}
   .account-sync-dot.synced{background:#67a782;}
   .account-sync-dot.syncing{background:var(--accent-400); animation:sync-pulse 1s ease-in-out infinite;}
   .account-sync-dot.error{background:var(--danger);}
-  .account-info{flex:1; min-width:0;}
-  .account-name{font-size:12.5px; font-weight:600; color:var(--text-900); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
-  .account-sync-status{font-size:10.5px; color:var(--text-400); display:flex; align-items:center; gap:4px; margin-top:1px;}
-  .account-sync-status .dot{width:5px; height:5px; border-radius:50%; background:var(--text-400); flex:0 0 auto;}
-  .account-sync-status.synced .dot{background:#67a782;}
-  .account-sync-status.syncing .dot{background:var(--accent-400); animation:sync-pulse 1s ease-in-out infinite;}
-  .account-sync-status.error .dot{background:var(--danger);}
   @keyframes sync-pulse{0%,100%{opacity:1;} 50%{opacity:.35;}}
-  .account-menu-btn{width:26px; height:26px; border-radius:6px; border:none; background:transparent; color:var(--text-400); flex:0 0 auto; display:flex; align-items:center; justify-content:center;}
-  .account-menu-btn:active{background:var(--bg-sunken-2);}
   .menu-account-id{font-size:11.5px; color:var(--text-500); padding:6px 10px 8px; border-bottom:1px solid var(--line); margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px;}
-  /* mobile: the folder rail is a compact horizontal strip, not a tall
-     sidebar — a two-line name+status block there ate too much of it, so
-     collapse to just the avatar with a small sync-state dot on its corner. */
-  @media (max-width:719px){
-    .account-info{display:none;}
-    .account-sync-dot{display:block;}
-  }
   .rail-row{display:flex; gap:8px; overflow-x:auto; overflow-y:hidden; white-space:nowrap; -webkit-overflow-scrolling:touch;}
   .rail-crumbs{display:flex; align-items:center; gap:3px; overflow-x:auto; white-space:nowrap; -webkit-overflow-scrolling:touch;}
   .crumb-item{background:none; border:none; padding:3px 3px; font-size:12px; font-weight:600; color:var(--text-500); border-radius:6px; flex:0 0 auto; transition:color .15s var(--ease);}
@@ -576,6 +560,7 @@
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="M7 8l5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
         <span class="btn-label">파일 업로드</span>
       </button>
+      <div class="lib-account" id="railAccount"></div>
     </div>
 
     <div class="lib-search-bar">
@@ -609,7 +594,6 @@
     <div class="lib-body" id="libBody">
       <div class="folder-rail" id="folderRail">
         <div id="railDynamic"></div>
-        <div class="rail-account" id="railAccount"></div>
       </div>
       <div class="lib-main" id="libMain">
         <div id="fileList"></div>
@@ -889,6 +873,12 @@
     }catch(e){}
   }
 
+  // True only once the *real* onAuthStateChanged has fired. `fb` itself
+  // turns non-null earlier than that (as soon as the SDK loads, with
+  // currentUser initialized to a null placeholder) — using `fb` alone to
+  // decide "resolved vs. still pending" was flashing the sign-in button
+  // during that gap, exactly the bug this whole cache was meant to avoid.
+  let authResolved = false;
   let firebaseLoadingPromise = null;
   async function ensureFirebase(){
     if(fb) return fb;
@@ -909,6 +899,7 @@
         }catch(e){ authDebug("지속성 설정 실패: "+e); }
         authMod.onAuthStateChanged(auth, (user)=>{
           fb.currentUser = user;
+          authResolved = true;
           cacheAuthUser(user);
           renderAccount();
           if(user) syncNow();
@@ -1000,11 +991,6 @@
 
   function setSyncStatus(state){
     const label = state==="syncing" ? "동기화 중" : state==="error" ? "동기화 실패" : state==="synced" ? "동기화됨" : "";
-    const statusEl = document.querySelector(".account-sync-status");
-    if(statusEl){
-      statusEl.className = "account-sync-status" + (state ? " " + state : "");
-      statusEl.querySelector(".label") && (statusEl.querySelector(".label").textContent = label);
-    }
     const dotEl = document.querySelector(".account-sync-dot");
     if(dotEl){
       dotEl.className = "account-sync-dot" + (state ? " " + state : "");
@@ -1020,15 +1006,14 @@
     // remember who was signed in) — the optimistic case shows the same
     // avatar UI so there's nothing to flash away from, just a "연결 중"
     // status until the real state arrives and either confirms or reverts it.
-    const confirmed = fb && fb.currentUser;
-    const pending = !fb && cachedAuthUser;
+    const confirmed = authResolved && fb && fb.currentUser;
+    const pending = !authResolved && cachedAuthUser;
     if(!confirmed && !pending){
       el.innerHTML =
-        '<button class="account-signin-btn" id="signInBtn">'+
+        '<button class="account-signin-btn" id="signInBtn" title="'+(lastAuthError ? "로그인 실패: "+escapeHtml(lastAuthError) : "Google로 로그인")+'">'+
           '<svg class="icon" viewBox="0 0 24 24"><path fill="#EA4335" d="M12 10.2v3.9h5.5c-.24 1.3-1.7 3.8-5.5 3.8-3.3 0-6-2.7-6-6.1s2.7-6.1 6-6.1c1.9 0 3.1.8 3.9 1.5l2.6-2.5C16.9 3.2 14.7 2.2 12 2.2 6.9 2.2 2.8 6.4 2.8 11.6S6.9 21 12 21c6.9 0 8.9-4.9 8.9-8.9 0-.6-.1-1.1-.2-1.6H12z"/></svg>'+
-          '<span>Google로 로그인</span>'+
         '</button>'+
-        (lastAuthError ? '<div class="account-error">로그인 실패: '+escapeHtml(lastAuthError)+'</div>' : '');
+        (lastAuthError ? '<span class="account-error-dot"></span>' : '');
       $("signInBtn").addEventListener("click", signInWithGoogle);
       return;
     }
@@ -1037,19 +1022,10 @@
     const statusClass = confirmed ? "synced" : "syncing";
     const statusLabel = confirmed ? "동기화됨" : "연결 중";
     el.innerHTML =
-      '<div class="account-row">'+
-        '<div class="account-avatar-wrap">'+
-          '<img class="account-avatar" src="'+escapeHtml(u.photoURL||"")+'" alt="">'+
-          '<span class="account-sync-dot '+statusClass+'"></span>'+
-        '</div>'+
-        '<div class="account-info">'+
-          '<div class="account-name">'+escapeHtml(name)+'</div>'+
-          '<div class="account-sync-status '+statusClass+'"><span class="dot"></span><span class="label">'+statusLabel+'</span></div>'+
-        '</div>'+
-        '<button class="account-menu-btn" id="accountMenuBtn" aria-label="계정 메뉴">'+
-          '<svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>'+
-        '</button>'+
-      '</div>';
+      '<button class="account-avatar-wrap" id="accountMenuBtn" aria-label="계정 메뉴">'+
+        '<img class="account-avatar" src="'+escapeHtml(u.photoURL||"")+'" alt="">'+
+        '<span class="account-sync-dot '+statusClass+'" title="'+statusLabel+'"></span>'+
+      '</button>';
     $("accountMenuBtn").addEventListener("click", (e)=>{
       e.stopPropagation();
       closeAllOverlays();
@@ -1057,8 +1033,8 @@
       const rect = e.currentTarget.getBoundingClientRect();
       const menu = document.createElement("div");
       menu.className = "menu-pop";
-      menu.style.bottom = (window.innerHeight - rect.top + 6) + "px";
-      menu.style.left = Math.max(10, rect.left - 120) + "px";
+      menu.style.top = (rect.bottom + 6) + "px";
+      menu.style.right = (window.innerWidth - rect.right) + "px";
       menu.innerHTML =
         '<div class="menu-account-id">'+escapeHtml(name)+'</div>'+
         '<button class="menu-item danger" id="signOutBtn">로그아웃</button>';
@@ -2294,7 +2270,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "23";
+  const SW_VERSION = "24";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
