@@ -197,6 +197,11 @@
   @media (hover:hover) and (pointer:fine){ .account-signin-btn:hover{background:var(--bg-sunken-2); border-color:var(--text-400);} }
   .account-signin-btn .icon{width:16px; height:16px;}
   .account-error{font-size:11px; color:var(--danger); margin-top:6px; line-height:1.4; padding:0 2px;}
+  .auth-debug-box{
+    font-family:'SFMono-Regular',Consolas,monospace; font-size:9.5px; line-height:1.5; color:var(--text-500);
+    background:var(--bg-sunken); border-radius:8px; padding:8px; margin-top:8px; max-height:180px; overflow-y:auto;
+    word-break:break-all; user-select:text;
+  }
   .account-row{display:flex; align-items:center; gap:9px; padding:6px; border-radius:var(--r-sm); transition:background-color .15s var(--ease);}
   @media (hover:hover) and (pointer:fine){ .account-row:hover{background:var(--bg-sunken);} }
   .account-avatar{width:30px; height:30px; border-radius:50%; flex:0 0 auto; background:var(--bg-sunken-2); object-fit:cover;}
@@ -855,46 +860,84 @@
   let syncInFlight = false;
 
   let lastAuthError = null; // surfaced in the account rail so mobile redirect failures aren't silent
+  // Temporary, visible-on-screen trace to diagnose the mobile redirect flow.
+  // Persisted to sessionStorage so the log from *before* navigating away to
+  // Google survives the full-page round trip and we can see the whole story.
+  let authDebugLines = [];
+  try{ authDebugLines = JSON.parse(sessionStorage.getItem("authDebugLines") || "[]"); }catch(e){}
 
+  function authDebug(msg){
+    const line = new Date().toISOString().slice(11,19) + " " + msg;
+    authDebugLines.push(line);
+    if(authDebugLines.length > 30) authDebugLines = authDebugLines.slice(-30);
+    try{ sessionStorage.setItem("authDebugLines", JSON.stringify(authDebugLines)); }catch(e){}
+    console.log("[authDebug]", msg);
+    renderAccount();
+  }
+
+  let firebaseLoadingPromise = null;
   async function ensureFirebase(){
     if(fb) return fb;
-    try{
-      const [appMod, authMod, fsMod] = await Promise.all([
-        import(FB_SDK + "firebase-app.js"),
-        import(FB_SDK + "firebase-auth.js"),
-        import(FB_SDK + "firebase-firestore.js"),
-      ]);
-      const app = appMod.initializeApp(firebaseConfig);
-      const auth = authMod.getAuth(app);
-      const db = fsMod.getFirestore(app);
-      fb = { app, auth, db, authMod, fsMod, currentUser: null };
-      // Force the most durable persistence explicitly — some mobile browsers
-      // silently fall back to in-memory persistence, which can't survive the
-      // full-page navigation a redirect sign-in does, making the return trip
-      // look like sign-in silently "did nothing".
-      try{ await authMod.setPersistence(auth, authMod.browserLocalPersistence); }catch(e){}
-      authMod.onAuthStateChanged(auth, (user)=>{
-        fb.currentUser = user;
-        renderAccount();
-        if(user) syncNow();
-      });
-      // completes a signInWithRedirect flow (mobile) on the page it lands
-      // back on; a no-op if this load wasn't a redirect return
+    if(firebaseLoadingPromise) return firebaseLoadingPromise;
+    firebaseLoadingPromise = (async ()=>{
+      authDebug("초기화 시작 url="+location.href.slice(0,60));
       try{
-        const result = await authMod.getRedirectResult(auth);
-        if(!result) console.log("[auth] getRedirectResult: no pending redirect on this load");
-        else console.log("[auth] getRedirectResult: signed in as", result.user && result.user.email);
+        const [appMod, authMod, fsMod] = await Promise.all([
+          import(FB_SDK + "firebase-app.js"),
+          import(FB_SDK + "firebase-auth.js"),
+          import(FB_SDK + "firebase-firestore.js"),
+        ]);
+        authDebug("SDK 로드 완료");
+        const app = appMod.initializeApp(firebaseConfig);
+        const auth = authMod.getAuth(app);
+        const db = fsMod.getFirestore(app);
+        fb = { app, auth, db, authMod, fsMod, currentUser: null };
+        // Force the most durable persistence explicitly — some mobile browsers
+        // silently fall back to in-memory persistence, which can't survive the
+        // full-page navigation a redirect sign-in does, making the return trip
+        // look like sign-in silently "did nothing".
+        try{
+          await authMod.setPersistence(auth, authMod.browserLocalPersistence);
+          authDebug("지속성 설정 완료");
+        }catch(e){ authDebug("지속성 설정 실패: "+e); }
+        authMod.onAuthStateChanged(auth, (user)=>{
+          authDebug("onAuthStateChanged: "+(user ? ("로그인됨 "+user.email) : "로그아웃 상태"));
+          fb.currentUser = user;
+          renderAccount();
+          if(user) syncNow();
+        });
+        // completes a signInWithRedirect flow (mobile) on the page it lands
+        // back on; a no-op if this load wasn't a redirect return
+        authDebug("getRedirectResult 호출...");
+        try{
+          const result = await authMod.getRedirectResult(auth);
+          authDebug("getRedirectResult 결과: "+(result && result.user ? ("성공 "+result.user.email) : "null(대기중 리다이렉트 없음)"));
+        }catch(e){
+          authDebug("getRedirectResult 에러: "+((e&&e.code)||e));
+          lastAuthError = (e && e.code) || String(e);
+          renderAccount();
+        }
+        return fb;
       }catch(e){
-        console.warn("redirect sign-in failed", e);
-        lastAuthError = (e && e.code) || String(e);
-        renderAccount();
+        authDebug("Firebase 로드 자체 실패: "+e);
+        return null;
       }
-      return fb;
-    }catch(e){
-      console.warn("cloud sync unavailable:", e);
-      return null;
-    }
+    })();
+    return firebaseLoadingPromise;
   }
+
+  // If the browser restores this page from the back-forward cache (bfcache)
+  // instead of doing a fresh load — which can happen on the navigation back
+  // from a redirect-based sign-in — none of our init code re-runs at all,
+  // so the redirect result would never get checked. Force a re-check then.
+  window.addEventListener("pageshow", (e)=>{
+    if(e.persisted){
+      authDebug("pageshow(persisted=true) — bfcache 복원 감지, 재확인");
+      fb = null;
+      firebaseLoadingPromise = null;
+      ensureFirebase();
+    }
+  });
 
   // Mobile browsers handle signInWithPopup unreliably (blocked popups, or an
   // OS-level "open with" chooser hijacking the flow) — Firebase's own
@@ -903,16 +946,18 @@
   const IS_MOBILE_UA = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
   async function signInWithGoogle(){
+    authDebug("로그인 버튼 클릭, UA모바일="+IS_MOBILE_UA);
     const inst = await ensureFirebase();
     if(!inst) { alert("동기화 기능을 불러오지 못했어요. 인터넷 연결을 확인해주세요."); return; }
     const provider = new inst.authMod.GoogleAuthProvider();
     try{
       if(IS_MOBILE_UA){
+        authDebug("signInWithRedirect 호출, 잠시 후 페이지 이동됨");
         await inst.authMod.signInWithRedirect(inst.auth, provider);
       } else {
         await inst.authMod.signInWithPopup(inst.auth, provider);
       }
-    }catch(e){ console.warn("sign-in failed", e); }
+    }catch(e){ authDebug("signInWithRedirect/Popup 에러: "+((e&&e.code)||e)); }
   }
   async function signOutOfCloud(){
     if(!fb) return;
@@ -927,6 +972,13 @@
       state==="syncing" ? "동기화 중" : state==="error" ? "동기화 실패" : state==="synced" ? "동기화됨" : "");
   }
 
+  // TEMPORARY diagnostic trace for the mobile sign-in-not-completing issue —
+  // remove this block (and the calls to authDebug) once that's resolved.
+  function renderAuthDebugBox(){
+    if(!authDebugLines.length) return "";
+    return '<div class="auth-debug-box">'+authDebugLines.map(l=>escapeHtml(l)).join("<br>")+'</div>';
+  }
+
   function renderAccount(){
     const el = $("railAccount");
     if(!el) return;
@@ -936,7 +988,8 @@
           '<svg class="icon" viewBox="0 0 24 24"><path fill="#EA4335" d="M12 10.2v3.9h5.5c-.24 1.3-1.7 3.8-5.5 3.8-3.3 0-6-2.7-6-6.1s2.7-6.1 6-6.1c1.9 0 3.1.8 3.9 1.5l2.6-2.5C16.9 3.2 14.7 2.2 12 2.2 6.9 2.2 2.8 6.4 2.8 11.6S6.9 21 12 21c6.9 0 8.9-4.9 8.9-8.9 0-.6-.1-1.1-.2-1.6H12z"/></svg>'+
           '<span>Google로 로그인</span>'+
         '</button>'+
-        (lastAuthError ? '<div class="account-error">로그인 실패: '+escapeHtml(lastAuthError)+'</div>' : '');
+        (lastAuthError ? '<div class="account-error">로그인 실패: '+escapeHtml(lastAuthError)+'</div>' : '')+
+        renderAuthDebugBox();
       $("signInBtn").addEventListener("click", signInWithGoogle);
       return;
     }
@@ -951,7 +1004,8 @@
         '<button class="account-menu-btn" id="accountMenuBtn" aria-label="계정 메뉴">'+
           '<svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>'+
         '</button>'+
-      '</div>';
+      '</div>'+
+      renderAuthDebugBox();
     $("accountMenuBtn").addEventListener("click", (e)=>{
       e.stopPropagation();
       closeAllOverlays();
@@ -2194,7 +2248,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "17";
+  const SW_VERSION = "18";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
