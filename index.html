@@ -435,6 +435,7 @@
   }
   .drawer.show{transform:translateX(0);}
   .drawer-inner{display:flex; flex-direction:column; height:100%; width:100%;}
+  .drawer-resize-handle{display:none;}
   .drawer-head{padding:20px 18px 14px; border-bottom:1px solid var(--line);}
   .drawer-head .k{font-size:10.5px; text-transform:uppercase; letter-spacing:.12em; color:var(--text-400); font-weight:600;}
   .drawer-head .book-title{font-family:var(--display-font); font-weight:600; font-size:17px; margin-top:5px; color:var(--text-900); letter-spacing:-.01em;}
@@ -524,6 +525,17 @@
     }
     .drawer.show{width:300px;}
     .drawer-inner{width:300px;}
+    /* mouse-draggable divider on the panel's own right edge — laptops have
+       no swipe gesture, so dragging this line is the equivalent of the
+       touch drag on phones/tablets. Only shown once the panel is actually
+       open (width:300px); while closed the drawer's overflow:hidden clips
+       it anyway, and reopening happens via the toc button instead. */
+    .drawer-resize-handle{
+      display:block; position:absolute; top:0; right:0; bottom:0; width:8px;
+      cursor:col-resize; z-index:2; background:transparent;
+      transition:background-color .15s var(--ease);
+    }
+    .drawer-resize-handle:hover, .drawer-resize-handle.dragging{ background:var(--accent-wash); }
 
     /* settings/ink toolbars sit at the top of the reading column (not the
        whole screen) now that the TOC can occupy the left edge, and get
@@ -633,6 +645,7 @@
           </div>
           <div class="toc-list" id="tocList"></div>
         </div>
+        <div class="drawer-resize-handle" id="drawerResizeHandle" aria-hidden="true"></div>
       </div>
 
       <div class="reader-main">
@@ -1945,6 +1958,37 @@
     body.addEventListener("touchmove", onMove, {passive:false});
     body.addEventListener("touchend", onEnd, {passive:true});
     body.addEventListener("touchcancel", onEnd, {passive:true});
+
+    // Laptops/desktops have no swipe gesture, so the equivalent is dragging
+    // the divider on the panel's own right edge (mouse only — touch devices
+    // already get the drag above from anywhere in the open drawer).
+    const handle = $("drawerResizeHandle");
+    function onMouseDown(e){
+      if(!readerScreenVisible() || !drawer.classList.contains("show")) return;
+      e.preventDefault();
+      dragMode = "close";
+      dragging = true; undecided = false;
+      startX = e.clientX; startY = e.clientY;
+      maxW = drawerMaxWidth();
+      drawer.style.transition = "none";
+      handle.classList.add("dragging");
+      document.addEventListener("mousemove", onMouseMoveDoc);
+      document.addEventListener("mouseup", onMouseUpDoc);
+    }
+    function onMouseMoveDoc(e){
+      if(!dragging) return;
+      setDragPx(maxW + (e.clientX - startX));
+    }
+    function onMouseUpDoc(e){
+      if(!dragging) return;
+      dragging = false;
+      handle.classList.remove("dragging");
+      document.removeEventListener("mousemove", onMouseMoveDoc);
+      document.removeEventListener("mouseup", onMouseUpDoc);
+      const finalPx = maxW + (e.clientX - startX);
+      finishDrag(finalPx > maxW * 0.4, finalPx);
+    }
+    handle.addEventListener("mousedown", onMouseDown);
   })();
 
   function openSettings(){ settingsPop.classList.add("show"); $("overlay").classList.add("show"); }
@@ -2355,7 +2399,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "25";
+  const SW_VERSION = "26";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
