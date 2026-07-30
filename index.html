@@ -859,10 +859,11 @@
   let syncDebounceTimer = null;
   let syncInFlight = false;
 
-  let lastAuthError = null; // surfaced in the account rail so mobile redirect failures aren't silent
-  // Temporary, visible-on-screen trace to diagnose the mobile redirect flow.
-  // Persisted to sessionStorage so the log from *before* navigating away to
-  // Google survives the full-page round trip and we can see the whole story.
+  let lastAuthError = null; // surfaced in the account rail so sign-in failures aren't silent
+  // Visible-on-screen trace for the sign-in flow. Was essential for
+  // diagnosing why signInWithRedirect never completed on mobile (see GIS
+  // note below) — kept around since it's cheap and still useful for
+  // reporting future sign-in problems.
   let authDebugLines = [];
   try{ authDebugLines = JSON.parse(sessionStorage.getItem("authDebugLines") || "[]"); }catch(e){}
 
@@ -875,82 +876,29 @@
     renderAccount();
   }
 
-  async function dumpIndexedDBDiagnostics(){
-    try{
-      if(!indexedDB.databases){ authDebug("indexedDB.databases() 미지원"); return; }
-      const dbs = await indexedDB.databases();
-      authDebug("IndexedDB 목록: ["+dbs.map(d=>d.name+"@v"+d.version).join(", ")+"]");
-      const fbDb = dbs.find(d=> /firebase/i.test(d.name||""));
-      if(fbDb){
-        const req = indexedDB.open(fbDb.name);
-        await new Promise((resolve)=>{
-          req.onsuccess = ()=>{
-            const db = req.result;
-            authDebug("firebaseLocalStorageDb 스토어: ["+Array.from(db.objectStoreNames).join(", ")+"]");
-            const storeName = Array.from(db.objectStoreNames)[0];
-            if(storeName){
-              const tx = db.transaction(storeName, "readonly");
-              const getAllReq = tx.objectStore(storeName).getAllKeys();
-              getAllReq.onsuccess = ()=>{
-                authDebug("저장된 키: ["+getAllReq.result.join(", ")+"]");
-                resolve();
-              };
-              getAllReq.onerror = ()=> resolve();
-            } else resolve();
-          };
-          req.onerror = ()=>{ authDebug("firebaseLocalStorageDb 열기 실패"); resolve(); };
-        });
-      } else {
-        authDebug("firebase 관련 IndexedDB 없음 (저장 자체가 안 됨)");
-      }
-    }catch(e){
-      authDebug("IndexedDB 진단 실패: "+e);
-    }
-  }
-
   let firebaseLoadingPromise = null;
   async function ensureFirebase(){
     if(fb) return fb;
     if(firebaseLoadingPromise) return firebaseLoadingPromise;
     firebaseLoadingPromise = (async ()=>{
-      authDebug("초기화 시작 url="+location.href.slice(0,60)+" ref="+(document.referrer||"(없음)").slice(0,50));
-      await dumpIndexedDBDiagnostics();
       try{
         const [appMod, authMod, fsMod] = await Promise.all([
           import(FB_SDK + "firebase-app.js"),
           import(FB_SDK + "firebase-auth.js"),
           import(FB_SDK + "firebase-firestore.js"),
         ]);
-        authDebug("SDK 로드 완료");
         const app = appMod.initializeApp(firebaseConfig);
         const auth = authMod.getAuth(app);
         const db = fsMod.getFirestore(app);
         fb = { app, auth, db, authMod, fsMod, currentUser: null };
-        // Force the most durable persistence explicitly — some mobile browsers
-        // silently fall back to in-memory persistence, which can't survive the
-        // full-page navigation a redirect sign-in does, making the return trip
-        // look like sign-in silently "did nothing".
         try{
           await authMod.setPersistence(auth, authMod.browserLocalPersistence);
-          authDebug("지속성 설정 완료");
         }catch(e){ authDebug("지속성 설정 실패: "+e); }
         authMod.onAuthStateChanged(auth, (user)=>{
-          authDebug("onAuthStateChanged: "+(user ? ("로그인됨 "+user.email) : "로그아웃 상태"));
           fb.currentUser = user;
           renderAccount();
           if(user) syncNow();
         });
-        // completes a signInWithRedirect flow (mobile) on the page it lands
-        // back on; a no-op if this load wasn't a redirect return
-        authDebug("getRedirectResult 호출...");
-        try{
-          const result = await authMod.getRedirectResult(auth);
-          authDebug("getRedirectResult 결과: "+(result && result.user ? ("성공 "+result.user.email) : "null(대기중 리다이렉트 없음)"));
-        }catch(e){
-          authDebug("getRedirectResult 에러: "+((e&&e.code)||e));
-          lastAuthError = (e && e.code) || String(e);
-          renderAccount();
-        }
         return fb;
       }catch(e){
         authDebug("Firebase 로드 자체 실패: "+e);
@@ -960,38 +908,76 @@
     return firebaseLoadingPromise;
   }
 
-  // If the browser restores this page from the back-forward cache (bfcache)
-  // instead of doing a fresh load — which can happen on the navigation back
-  // from a redirect-based sign-in — none of our init code re-runs at all,
-  // so the redirect result would never get checked. Force a re-check then.
-  window.addEventListener("pageshow", (e)=>{
-    if(e.persisted){
-      authDebug("pageshow(persisted=true) — bfcache 복원 감지, 재확인");
-      fb = null;
-      firebaseLoadingPromise = null;
-      ensureFirebase();
-    }
-  });
+  // --- Google Identity Services (GIS) sign-in -----------------------------
+  // Firebase's own signInWithRedirect (used previously for mobile) sends the
+  // whole page away to accounts.google.com and back, relying on an
+  // IndexedDB marker surviving that multi-origin round trip to resume the
+  // sign-in on return. That never completed reliably on mobile (confirmed
+  // on both Samsung Internet and Chrome). GIS's token client instead opens
+  // its own popup and hands the access token back via a JS callback — the
+  // page itself never navigates away, so there's nothing that needs to
+  // survive a round trip. Same code path works for desktop and mobile.
+  const GOOGLE_CLIENT_ID = "777592814595-ngj3pemkrukeh95csua9ev0hdam5ip09.apps.googleusercontent.com";
+  let gisTokenClient = null;
+  let gisLoadingPromise = null;
 
-  // Mobile browsers handle signInWithPopup unreliably (blocked popups, or an
-  // OS-level "open with" chooser hijacking the flow) — Firebase's own
-  // guidance is to use a full-page redirect there instead; desktop keeps the
-  // popup since it doesn't lose app state.
-  const IS_MOBILE_UA = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  function loadGisScript(){
+    if(window.google && window.google.accounts && window.google.accounts.oauth2) return Promise.resolve();
+    if(gisLoadingPromise) return gisLoadingPromise;
+    gisLoadingPromise = new Promise((resolve, reject)=>{
+      const s = document.createElement("script");
+      s.src = "https://accounts.google.com/gsi/client";
+      s.async = true;
+      s.onload = ()=> resolve();
+      s.onerror = ()=> reject(new Error("GIS 스크립트 로드 실패"));
+      document.head.appendChild(s);
+    });
+    return gisLoadingPromise;
+  }
+
+  // Loaded proactively at startup (not on click) so that by the time the
+  // user actually taps the button, requestAccessToken() below runs
+  // synchronously in direct response to that tap — some mobile browsers
+  // block the popup if it's opened after an `await`, since it no longer
+  // looks like a direct continuation of the user gesture.
+  async function prepareGis(){
+    try{
+      await loadGisScript();
+      if(!gisTokenClient){
+        gisTokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: GOOGLE_CLIENT_ID,
+          scope: "openid email profile",
+          callback: onGisToken,
+          error_callback: (err)=>{ authDebug("GIS 팝업 에러: "+(err && (err.type||err.message) || err)); },
+        });
+      }
+    }catch(e){
+      authDebug("GIS 준비 실패: "+e);
+    }
+  }
+
+  async function onGisToken(resp){
+    if(!resp || resp.error){ authDebug("GIS 토큰 에러: "+(resp && resp.error)); return; }
+    authDebug("액세스 토큰 수신, Firebase 로그인 중...");
+    const inst = await ensureFirebase();
+    if(!inst){ authDebug("Firebase 미준비로 로그인 중단"); return; }
+    try{
+      const credential = inst.authMod.GoogleAuthProvider.credential(null, resp.access_token);
+      await inst.authMod.signInWithCredential(inst.auth, credential);
+      lastAuthError = null;
+      authDebug("Firebase 로그인 성공");
+    }catch(e){
+      authDebug("signInWithCredential 실패: "+((e&&e.code)||e));
+      lastAuthError = (e && e.code) || String(e);
+      renderAccount();
+    }
+  }
 
   async function signInWithGoogle(){
-    authDebug("로그인 버튼 클릭, UA모바일="+IS_MOBILE_UA);
-    const inst = await ensureFirebase();
-    if(!inst) { alert("동기화 기능을 불러오지 못했어요. 인터넷 연결을 확인해주세요."); return; }
-    const provider = new inst.authMod.GoogleAuthProvider();
-    try{
-      if(IS_MOBILE_UA){
-        authDebug("signInWithRedirect 호출, 잠시 후 페이지 이동됨");
-        await inst.authMod.signInWithRedirect(inst.auth, provider);
-      } else {
-        await inst.authMod.signInWithPopup(inst.auth, provider);
-      }
-    }catch(e){ authDebug("signInWithRedirect/Popup 에러: "+((e&&e.code)||e)); }
+    authDebug("로그인 버튼 클릭");
+    if(!gisTokenClient) await prepareGis();
+    if(!gisTokenClient){ alert("로그인 기능을 불러오지 못했어요. 인터넷 연결을 확인해주세요."); return; }
+    gisTokenClient.requestAccessToken();
   }
   async function signOutOfCloud(){
     if(!fb) return;
@@ -1006,8 +992,8 @@
       state==="syncing" ? "동기화 중" : state==="error" ? "동기화 실패" : state==="synced" ? "동기화됨" : "");
   }
 
-  // TEMPORARY diagnostic trace for the mobile sign-in-not-completing issue —
-  // remove this block (and the calls to authDebug) once that's resolved.
+  // Renders the on-screen sign-in trace (see authDebug above) under the
+  // account button so problems are reportable without console access.
   function renderAuthDebugBox(){
     if(!authDebugLines.length) return "";
     return '<div class="auth-debug-box">'+authDebugLines.map(l=>escapeHtml(l)).join("<br>")+'</div>';
@@ -2282,7 +2268,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "20";
+  const SW_VERSION = "21";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
@@ -2325,6 +2311,7 @@
     // can't load (offline, blocked, etc.)
     renderAccount();
     ensureFirebase();
+    prepareGis();
     window.addEventListener("focus", ()=>{ if(fb && fb.currentUser) syncNow(); });
     setInterval(()=>{ if(fb && fb.currentUser) syncNow(); }, 5*60*1000);
   })();
