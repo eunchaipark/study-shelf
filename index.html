@@ -870,6 +870,9 @@
         renderAccount();
         if(user) syncNow();
       });
+      // completes a signInWithRedirect flow (mobile) on the page it lands
+      // back on; a no-op if this load wasn't a redirect return
+      authMod.getRedirectResult(auth).catch(e=> console.warn("redirect sign-in failed", e));
       return fb;
     }catch(e){
       console.warn("cloud sync unavailable:", e);
@@ -877,12 +880,22 @@
     }
   }
 
+  // Mobile browsers handle signInWithPopup unreliably (blocked popups, or an
+  // OS-level "open with" chooser hijacking the flow) — Firebase's own
+  // guidance is to use a full-page redirect there instead; desktop keeps the
+  // popup since it doesn't lose app state.
+  const IS_MOBILE_UA = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
   async function signInWithGoogle(){
     const inst = await ensureFirebase();
     if(!inst) { alert("동기화 기능을 불러오지 못했어요. 인터넷 연결을 확인해주세요."); return; }
+    const provider = new inst.authMod.GoogleAuthProvider();
     try{
-      const provider = new inst.authMod.GoogleAuthProvider();
-      await inst.authMod.signInWithPopup(inst.auth, provider);
+      if(IS_MOBILE_UA){
+        await inst.authMod.signInWithRedirect(inst.auth, provider);
+      } else {
+        await inst.authMod.signInWithPopup(inst.auth, provider);
+      }
     }catch(e){ console.warn("sign-in failed", e); }
   }
   async function signOutOfCloud(){
@@ -2140,7 +2153,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "15";
+  const SW_VERSION = "16";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
