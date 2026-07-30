@@ -1,8 +1,8 @@
 // 서재 — app-shell service worker.
 // Precaches the shell (HTML/CSS-in-HTML/JS/icons/vendor lib) so the reader still
 // opens offline; book content itself lives in IndexedDB, not here.
-const SHELL_CACHE = "seojae-shell-v19";
-const RUNTIME_CACHE = "seojae-runtime-v19";
+const SHELL_CACHE = "seojae-shell-v20";
+const RUNTIME_CACHE = "seojae-runtime-v20";
 const CURRENT_CACHES = [SHELL_CACHE, RUNTIME_CACHE];
 
 const SHELL_URLS = [
@@ -65,7 +65,14 @@ const SHELL_URLS = [
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(SHELL_CACHE)
-      .then((cache) => cache.addAll(SHELL_URLS))
+      .then((cache) => Promise.all(
+        // cache:"reload" bypasses the browser's own HTTP cache for each
+        // fetch — same reasoning as handleNavigation below: GitHub Pages
+        // sends Cache-Control: max-age=600 on every file, so a plain
+        // cache.addAll() could precache stale copies for up to 10 minutes
+        // after a deploy instead of what was just pushed.
+        SHELL_URLS.map((url) => fetch(url, { cache: "reload" }).then((res) => cache.put(url, res)))
+      ))
       .then(() => self.skipWaiting())
   );
 });
@@ -109,7 +116,7 @@ async function handleShellRequest(request) {
   const cached = await cache.match(request);
   if (cached) return cached;
   try {
-    const res = await fetch(request);
+    const res = await fetch(request, { cache: "reload" });
     if (res && res.ok) cache.put(request, res.clone());
     return res;
   } catch (e) {
@@ -119,11 +126,14 @@ async function handleShellRequest(request) {
 }
 
 // Network-first for navigations so users get the newest shell when online,
-// falling back to the cached shell when offline.
+// falling back to the cached shell when offline. cache:"reload" bypasses the
+// *browser's own* HTTP cache for this fetch — GitHub Pages serves index.html
+// with Cache-Control: max-age=600, so without this, "network-first" could
+// still silently hand back a stale copy for up to 10 minutes after a deploy.
 async function handleNavigation(request) {
   const cache = await caches.open(SHELL_CACHE);
   try {
-    const res = await fetch(request);
+    const res = await fetch(request, { cache: "reload" });
     if (res && res.ok) cache.put("./index.html", res.clone());
     return res;
   } catch (e) {
