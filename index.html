@@ -161,6 +161,29 @@
     padding:var(--sp-3) var(--sp-4); border-bottom:1px solid var(--line);
     background:var(--surface);
   }
+  #railDynamic{display:flex; flex-direction:column; gap:10px; min-width:0;}
+  .rail-account{margin-top:auto; padding-top:10px;}
+  .account-signin-btn{
+    display:flex; align-items:center; justify-content:center; gap:8px; width:100%;
+    background:var(--bg-sunken); border:1px solid var(--line-strong); color:var(--text-700);
+    border-radius:var(--r-sm); padding:10px 12px; font-size:12.5px; font-weight:600;
+    transition:background-color .15s var(--ease), border-color .15s var(--ease);
+  }
+  @media (hover:hover) and (pointer:fine){ .account-signin-btn:hover{background:var(--bg-sunken-2); border-color:var(--text-400);} }
+  .account-signin-btn .icon{width:16px; height:16px;}
+  .account-row{display:flex; align-items:center; gap:9px; padding:6px; border-radius:var(--r-sm); transition:background-color .15s var(--ease);}
+  @media (hover:hover) and (pointer:fine){ .account-row:hover{background:var(--bg-sunken);} }
+  .account-avatar{width:30px; height:30px; border-radius:50%; flex:0 0 auto; background:var(--bg-sunken-2); object-fit:cover;}
+  .account-info{flex:1; min-width:0;}
+  .account-name{font-size:12.5px; font-weight:600; color:var(--text-900); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .account-sync-status{font-size:10.5px; color:var(--text-400); display:flex; align-items:center; gap:4px; margin-top:1px;}
+  .account-sync-status .dot{width:5px; height:5px; border-radius:50%; background:var(--text-400); flex:0 0 auto;}
+  .account-sync-status.synced .dot{background:#67a782;}
+  .account-sync-status.syncing .dot{background:var(--accent-400); animation:sync-pulse 1s ease-in-out infinite;}
+  .account-sync-status.error .dot{background:var(--danger);}
+  @keyframes sync-pulse{0%,100%{opacity:1;} 50%{opacity:.35;}}
+  .account-menu-btn{width:26px; height:26px; border-radius:6px; border:none; background:transparent; color:var(--text-400); flex:0 0 auto; display:flex; align-items:center; justify-content:center;}
+  .account-menu-btn:active{background:var(--bg-sunken-2);}
   .rail-row{display:flex; gap:8px; overflow-x:auto; overflow-y:hidden; white-space:nowrap; -webkit-overflow-scrolling:touch;}
   .rail-crumbs{display:flex; align-items:center; gap:3px; overflow-x:auto; white-space:nowrap; -webkit-overflow-scrolling:touch;}
   .crumb-item{background:none; border:none; padding:3px 3px; font-size:12px; font-weight:600; color:var(--text-500); border-radius:6px; flex:0 0 auto; transition:color .15s var(--ease);}
@@ -512,7 +535,10 @@
     </div>
 
     <div class="lib-body" id="libBody">
-      <div class="folder-rail" id="folderRail"></div>
+      <div class="folder-rail" id="folderRail">
+        <div id="railDynamic"></div>
+        <div class="rail-account" id="railAccount"></div>
+      </div>
       <div class="lib-main" id="libMain">
         <div id="fileList"></div>
       </div>
@@ -721,8 +747,8 @@
     folders = await S.getJSON("app:folders", []);
     files = await S.getJSON("app:files", []);
   }
-  async function persistFolders(){ await S.setJSON("app:folders", folders); }
-  async function persistFiles(){ await S.setJSON("app:files", files); }
+  async function persistFolders(){ await S.setJSON("app:folders", folders); scheduleSync(); }
+  async function persistFiles(){ await S.setJSON("app:files", files); scheduleSync(); }
 
   async function loadPrefs(){
     const prefs = await S.getJSON("app:prefs", {});
@@ -730,8 +756,248 @@
     density = prefs.density || "comfortable";
     customBg = prefs.customBg || "#faf9f6";
     customText = prefs.customText || "#1d1e21";
+    prefsUpdatedTs = prefs.updatedTs || 0;
   }
-  async function persistPrefs(){ await S.setJSON("app:prefs", {sortMode, density, customBg, customText}); }
+  async function persistPrefs(){
+    prefsUpdatedTs = Date.now();
+    await S.setJSON("app:prefs", {sortMode, density, customBg, customText, updatedTs: prefsUpdatedTs});
+    scheduleSync();
+  }
+
+  /* ---------------- cloud sync (Firebase) ----------------
+     Optional enhancement layered on top of the local-first IndexedDB store:
+     if Firebase fails to load (offline, blocked, etc.) the app just runs in
+     local-only mode, same as before this feature existed. Firestore layout,
+     all scoped under users/{uid}/:
+       library/main    -> { folders, files, updatedAt }
+       library/deleted -> { ids: { [fileId]: deletedAtMs } }  (tombstones)
+       prefs/main       -> { sortMode, density, customBg, customText, updatedTs }
+       content/{fileId} -> { text, updatedAt }
+       ink/{fileId}_{chapterIdx} -> { strokes, updatedAt }
+     Merge rule for files/folders: union by id, higher updatedTs wins;
+     tombstones in library/deleted suppress resurrection of files deleted on
+     another device. */
+  const firebaseConfig = {
+    apiKey: "AIzaSyB6wHcqUil-hvoQAuD-XcDUFETYeP0AXwM",
+    authDomain: "study-shelf-f3e2b.firebaseapp.com",
+    projectId: "study-shelf-f3e2b",
+    storageBucket: "study-shelf-f3e2b.firebasestorage.app",
+    messagingSenderId: "777592814595",
+    appId: "1:777592814595:web:2528d75d24b7a3ed3d2236"
+  };
+  const FB_SDK = "https://www.gstatic.com/firebasejs/12.16.0/";
+  let fb = null; // { auth, db, authMod, fsMod, currentUser } once loaded; null if unavailable
+  let prefsUpdatedTs = 0;
+  let syncDebounceTimer = null;
+  let syncInFlight = false;
+
+  async function ensureFirebase(){
+    if(fb) return fb;
+    try{
+      const [appMod, authMod, fsMod] = await Promise.all([
+        import(FB_SDK + "firebase-app.js"),
+        import(FB_SDK + "firebase-auth.js"),
+        import(FB_SDK + "firebase-firestore.js"),
+      ]);
+      const app = appMod.initializeApp(firebaseConfig);
+      const auth = authMod.getAuth(app);
+      const db = fsMod.getFirestore(app);
+      fb = { app, auth, db, authMod, fsMod, currentUser: null };
+      authMod.onAuthStateChanged(auth, (user)=>{
+        fb.currentUser = user;
+        renderAccount();
+        if(user) syncNow();
+      });
+      return fb;
+    }catch(e){
+      console.warn("cloud sync unavailable:", e);
+      return null;
+    }
+  }
+
+  async function signInWithGoogle(){
+    const inst = await ensureFirebase();
+    if(!inst) { alert("동기화 기능을 불러오지 못했어요. 인터넷 연결을 확인해주세요."); return; }
+    try{
+      const provider = new inst.authMod.GoogleAuthProvider();
+      await inst.authMod.signInWithPopup(inst.auth, provider);
+    }catch(e){ console.warn("sign-in failed", e); }
+  }
+  async function signOutOfCloud(){
+    if(!fb) return;
+    await fb.authMod.signOut(fb.auth);
+  }
+
+  function setSyncStatus(state){
+    const el = document.querySelector(".account-sync-status");
+    if(!el) return;
+    el.className = "account-sync-status" + (state ? " " + state : "");
+    el.querySelector(".label") && (el.querySelector(".label").textContent =
+      state==="syncing" ? "동기화 중" : state==="error" ? "동기화 실패" : state==="synced" ? "동기화됨" : "");
+  }
+
+  function renderAccount(){
+    const el = $("railAccount");
+    if(!el) return;
+    if(!fb || !fb.currentUser){
+      el.innerHTML =
+        '<button class="account-signin-btn" id="signInBtn">'+
+          '<svg class="icon" viewBox="0 0 24 24"><path fill="#EA4335" d="M12 10.2v3.9h5.5c-.24 1.3-1.7 3.8-5.5 3.8-3.3 0-6-2.7-6-6.1s2.7-6.1 6-6.1c1.9 0 3.1.8 3.9 1.5l2.6-2.5C16.9 3.2 14.7 2.2 12 2.2 6.9 2.2 2.8 6.4 2.8 11.6S6.9 21 12 21c6.9 0 8.9-4.9 8.9-8.9 0-.6-.1-1.1-.2-1.6H12z"/></svg>'+
+          '<span>Google로 로그인</span>'+
+        '</button>';
+      $("signInBtn").addEventListener("click", signInWithGoogle);
+      return;
+    }
+    const u = fb.currentUser;
+    el.innerHTML =
+      '<div class="account-row">'+
+        '<img class="account-avatar" src="'+escapeHtml(u.photoURL||"")+'" alt="">'+
+        '<div class="account-info">'+
+          '<div class="account-name">'+escapeHtml(u.displayName||u.email||"")+'</div>'+
+          '<div class="account-sync-status"><span class="dot"></span><span class="label">동기화됨</span></div>'+
+        '</div>'+
+        '<button class="account-menu-btn" id="accountMenuBtn" aria-label="계정 메뉴">'+
+          '<svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>'+
+        '</button>'+
+      '</div>';
+    $("accountMenuBtn").addEventListener("click", (e)=>{
+      e.stopPropagation();
+      closeAllOverlays();
+      $("overlay").classList.add("show");
+      const rect = e.currentTarget.getBoundingClientRect();
+      const menu = document.createElement("div");
+      menu.className = "menu-pop";
+      menu.style.bottom = (window.innerHeight - rect.top + 6) + "px";
+      menu.style.left = Math.max(10, rect.left - 120) + "px";
+      menu.innerHTML = '<button class="menu-item danger" id="signOutBtn">로그아웃</button>';
+      document.body.appendChild(menu);
+      $("signOutBtn").addEventListener("click", async ()=>{ closeAllOverlays(); await signOutOfCloud(); });
+    });
+  }
+
+  function scheduleSync(){
+    if(!fb || !fb.currentUser) return;
+    clearTimeout(syncDebounceTimer);
+    syncDebounceTimer = setTimeout(syncNow, 4000);
+  }
+
+  async function pushFileToCloud(uid, f){
+    const { doc, setDoc } = fb.fsMod;
+    const text = await S.getText("file-content:"+f.id);
+    if(text != null) await setDoc(doc(fb.db, "users", uid, "content", f.id), { text, updatedAt: f.updatedTs });
+    for(const idx of (f.inkChapters||[])){
+      const strokes = await S.getJSON("ink:"+f.id+":"+idx, []);
+      await setDoc(doc(fb.db, "users", uid, "ink", f.id+"_"+idx), { strokes, updatedAt: f.updatedTs });
+    }
+  }
+  async function pullFileFromCloud(uid, f){
+    const { doc, getDoc } = fb.fsMod;
+    const snap = await getDoc(doc(fb.db, "users", uid, "content", f.id));
+    if(snap.exists()) await S.setText("file-content:"+f.id, snap.data().text);
+    for(const idx of (f.inkChapters||[])){
+      const inkSnap = await getDoc(doc(fb.db, "users", uid, "ink", f.id+"_"+idx));
+      if(inkSnap.exists()) await S.setJSON("ink:"+f.id+":"+idx, inkSnap.data().strokes);
+    }
+  }
+  async function deleteFileFromCloud(uid, f){
+    const { doc, deleteDoc, getDoc, setDoc } = fb.fsMod;
+    try{
+      await deleteDoc(doc(fb.db, "users", uid, "content", f.id));
+      for(const idx of (f.inkChapters||[])) await deleteDoc(doc(fb.db, "users", uid, "ink", f.id+"_"+idx));
+      const delRef = doc(fb.db, "users", uid, "library", "deleted");
+      const snap = await getDoc(delRef);
+      const ids = snap.exists() ? (snap.data().ids||{}) : {};
+      ids[f.id] = Date.now();
+      await setDoc(delRef, { ids });
+    }catch(e){ console.warn("cloud delete failed", e); }
+  }
+
+  async function syncNow(){
+    if(!fb || !fb.currentUser || syncInFlight) return;
+    syncInFlight = true;
+    setSyncStatus("syncing");
+    try{
+      const uid = fb.currentUser.uid;
+      const { doc, getDoc, setDoc } = fb.fsMod;
+      const libRef = doc(fb.db, "users", uid, "library", "main");
+      const libSnap = await getDoc(libRef);
+      const cloud = libSnap.exists() ? libSnap.data() : { folders: [], files: [], updatedAt: 0 };
+      const cloudFiles = cloud.files || [];
+      const cloudFolders = cloud.folders || [];
+
+      const delSnap = await getDoc(doc(fb.db, "users", uid, "library", "deleted"));
+      const deletedMap = delSnap.exists() ? (delSnap.data().ids||{}) : {};
+
+      // folders: union by id (no rename/delete feature yet, so no conflicts to resolve)
+      const folderMap = new Map();
+      folders.forEach(f=> folderMap.set(f.id, f));
+      cloudFolders.forEach(f=> { if(!folderMap.has(f.id)) folderMap.set(f.id, f); });
+      const mergedFolders = Array.from(folderMap.values());
+
+      // files: newer updatedTs wins per id; union of ids from both sides
+      const localById = new Map(files.map(f=>[f.id, f]));
+      const cloudById = new Map(cloudFiles.map(f=>[f.id, f]));
+      const allIds = new Set([...localById.keys(), ...cloudById.keys()]);
+      const toPush = [], toPull = [];
+      let mergedFiles = [];
+      for(const id of allIds){
+        const l = localById.get(id), c = cloudById.get(id);
+        let winner;
+        if(l && !c){ winner = l; toPush.push(l); }
+        else if(c && !l){ winner = c; toPull.push(c); }
+        else if(l.updatedTs >= c.updatedTs){ winner = l; if(l.updatedTs > c.updatedTs) toPush.push(l); }
+        else { winner = c; toPull.push(c); }
+        mergedFiles.push(winner);
+      }
+
+      // tombstones: drop files deleted (on any device) after their last edit
+      const purged = [];
+      mergedFiles = mergedFiles.filter(f=>{
+        const delAt = deletedMap[f.id];
+        if(delAt && delAt >= f.updatedTs){ purged.push(f); return false; }
+        return true;
+      });
+      for(const f of purged){
+        await S.del("file-content:"+f.id);
+        for(const idx of (f.inkChapters||[])) await S.del("ink:"+f.id+":"+idx);
+      }
+
+      folders = mergedFolders;
+      files = mergedFiles;
+      await S.setJSON("app:folders", folders);
+      await S.setJSON("app:files", files);
+
+      for(const f of toPull) if(!purged.includes(f)) await pullFileFromCloud(uid, f);
+      for(const f of toPush) if(!purged.includes(f)) await pushFileToCloud(uid, f);
+
+      await setDoc(libRef, { folders: mergedFolders, files: mergedFiles, updatedAt: Date.now() });
+
+      // prefs: last-writer-wins by timestamp
+      const prefsRef = doc(fb.db, "users", uid, "prefs", "main");
+      const prefsSnap = await getDoc(prefsRef);
+      const cloudPrefs = prefsSnap.exists() ? prefsSnap.data() : null;
+      if(cloudPrefs && (cloudPrefs.updatedTs||0) > prefsUpdatedTs){
+        sortMode = cloudPrefs.sortMode || sortMode;
+        density = cloudPrefs.density || density;
+        customBg = cloudPrefs.customBg || customBg;
+        customText = cloudPrefs.customText || customText;
+        prefsUpdatedTs = cloudPrefs.updatedTs;
+        await S.setJSON("app:prefs", {sortMode, density, customBg, customText, updatedTs: prefsUpdatedTs});
+        sortSelect.value = sortMode;
+        updateDensityButtons();
+      } else {
+        await setDoc(prefsRef, {sortMode, density, customBg, customText, updatedTs: prefsUpdatedTs});
+      }
+
+      renderAll();
+      setSyncStatus("synced");
+    }catch(e){
+      console.warn("sync failed", e);
+      setSyncStatus("error");
+    }finally{
+      syncInFlight = false;
+    }
+  }
 
   function sortFiles(arr){
     const a = arr.slice();
@@ -771,7 +1037,7 @@
 
   /* ---------------- folder rail ---------------- */
   function renderFolderRail(){
-    const rail = $("folderRail");
+    const rail = $("railDynamic");
     rail.innerHTML = "";
 
     const pinned = document.createElement("div");
@@ -1080,6 +1346,8 @@
       files = files.filter(x=>x.id!==f.id);
       await persistFiles();
       await S.del("file-content:"+f.id);
+      for(const idx of (f.inkChapters||[])) await S.del("ink:"+f.id+":"+idx);
+      if(fb && fb.currentUser) deleteFileFromCloud(fb.currentUser.uid, f);
       closeAllOverlays();
       renderAll();
     });
@@ -1693,7 +1961,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "13";
+  const SW_VERSION = "14";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
@@ -1730,6 +1998,14 @@
     $("customThemeSwatch").style.setProperty("--sw-custom-bg", customBg);
     $("customThemeSwatch").style.setProperty("--sw-custom-text", customText);
     renderAll();
+
+    // cloud sync loads in the background — never blocks the local-first
+    // startup above, and just leaves the "로그인" button in place if it
+    // can't load (offline, blocked, etc.)
+    renderAccount();
+    ensureFirebase();
+    window.addEventListener("focus", ()=>{ if(fb && fb.currentUser) syncNow(); });
+    setInterval(()=>{ if(fb && fb.currentUser) syncNow(); }, 5*60*1000);
   })();
 
 })();

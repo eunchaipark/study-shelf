@@ -1,8 +1,8 @@
 // 서재 — app-shell service worker.
 // Precaches the shell (HTML/CSS-in-HTML/JS/icons/vendor lib) so the reader still
 // opens offline; book content itself lives in IndexedDB, not here.
-const SHELL_CACHE = "seojae-shell-v13";
-const RUNTIME_CACHE = "seojae-runtime-v13";
+const SHELL_CACHE = "seojae-shell-v14";
+const RUNTIME_CACHE = "seojae-runtime-v14";
 const CURRENT_CACHES = [SHELL_CACHE, RUNTIME_CACHE];
 
 const SHELL_URLS = [
@@ -39,8 +39,16 @@ function isGoogleFontRequest(url) {
   return url.hostname === "fonts.googleapis.com" || url.hostname === "fonts.gstatic.com";
 }
 
-// Stale-while-revalidate: serve cached font instantly, refresh in the background.
-async function handleFontRequest(request) {
+// Firebase SDK modules (loaded lazily for optional cloud sync) — cache them
+// the same way as fonts so sync can still boot from cache when briefly
+// offline. Firestore's own API traffic (firestore.googleapis.com) is live
+// data, not a static asset, and is intentionally left uncached.
+function isFirebaseSdkRequest(url) {
+  return url.hostname === "www.gstatic.com" && url.pathname.startsWith("/firebasejs/");
+}
+
+// Stale-while-revalidate: serve cached copy instantly, refresh in the background.
+async function handleRuntimeCacheRequest(request) {
   const cache = await caches.open(RUNTIME_CACHE);
   const cached = await cache.match(request);
   const network = fetch(request)
@@ -87,8 +95,8 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(handleNavigation(request));
     return;
   }
-  if (isGoogleFontRequest(url)) {
-    event.respondWith(handleFontRequest(request));
+  if (isGoogleFontRequest(url) || isFirebaseSdkRequest(url)) {
+    event.respondWith(handleRuntimeCacheRequest(request));
     return;
   }
   if (url.origin === self.location.origin) {
