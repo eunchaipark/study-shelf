@@ -1813,7 +1813,10 @@
       b.className = "toc-item" + (i===chapterIdx ? " active":"");
       b.innerHTML = '<span class="n">'+String(i+1).padStart(2,"0")+'</span><span class="toc-title">'+escapeHtml(c.title)+'</span>'+
         (inkChapters.includes(i) ? '<span class="toc-ink-dot" aria-label="필기 있음"></span>' : '');
-      b.addEventListener("click", ()=>{ renderChapter(i); closeDrawer(); });
+      // phones: the TOC is a full overlay, so picking a chapter should get
+      // it out of the way; tablet/desktop: it's a persistent side panel,
+      // so it should stay open across chapters like a real sidebar
+      b.addEventListener("click", ()=>{ renderChapter(i); if(!isTabletUp()) closeDrawer(); });
       tocList.appendChild(b);
     });
   }
@@ -2399,7 +2402,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "26";
+  const SW_VERSION = "27";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
