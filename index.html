@@ -21,6 +21,31 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&family=Noto+Serif+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="./vendor/marked.min.js"></script>
+<script src="./vendor/purify.min.js"></script>
+<script src="./vendor/highlight.min.js"></script>
+<script src="./vendor/hljs-languages/javascript.min.js"></script>
+<script src="./vendor/hljs-languages/typescript.min.js"></script>
+<script src="./vendor/hljs-languages/python.min.js"></script>
+<script src="./vendor/hljs-languages/java.min.js"></script>
+<script src="./vendor/hljs-languages/c.min.js"></script>
+<script src="./vendor/hljs-languages/cpp.min.js"></script>
+<script src="./vendor/hljs-languages/csharp.min.js"></script>
+<script src="./vendor/hljs-languages/go.min.js"></script>
+<script src="./vendor/hljs-languages/rust.min.js"></script>
+<script src="./vendor/hljs-languages/xml.min.js"></script>
+<script src="./vendor/hljs-languages/css.min.js"></script>
+<script src="./vendor/hljs-languages/json.min.js"></script>
+<script src="./vendor/hljs-languages/bash.min.js"></script>
+<script src="./vendor/hljs-languages/sql.min.js"></script>
+<script src="./vendor/hljs-languages/markdown.min.js"></script>
+<script src="./vendor/hljs-languages/yaml.min.js"></script>
+<script src="./vendor/hljs-languages/plaintext.min.js"></script>
+<script src="./vendor/hljs-languages/php.min.js"></script>
+<script src="./vendor/hljs-languages/ruby.min.js"></script>
+<script src="./vendor/hljs-languages/swift.min.js"></script>
+<script src="./vendor/hljs-languages/kotlin.min.js"></script>
+<link rel="stylesheet" href="./vendor/katex/katex.min.css">
+<script src="./vendor/katex/katex.min.js"></script>
 <style>
   :root{
     --bg-app:#F7F5F2;
@@ -337,6 +362,39 @@
   .read-inner hr{border:none; border-top:1px solid rgba(0,0,0,0.15); margin:2em 0;}
   .read-inner a{color:var(--accent-500);}
 
+  /* GFM task lists: marked doesn't add a task-list-item class, so target the
+     structural shape (li whose first child is the checkbox) directly and
+     drop the bullet that would otherwise sit next to it */
+  .read-inner li:has(> input[type="checkbox"]:first-child){list-style:none; margin-left:-1.4em;}
+  .read-inner input[type="checkbox"]{width:15px; height:15px; margin-right:7px; accent-color:var(--accent-400); vertical-align:-2px;}
+
+  /* math (KaTeX) */
+  .read-inner .katex-display{overflow-x:auto; overflow-y:hidden; padding:.3em 0; margin:0 0 1.2em;}
+  .read-inner .katex{font-size:1.05em;}
+
+  /* code syntax highlighting (highlight.js), tuned to the app palette */
+  .read-inner pre code.hljs{display:block; overflow-x:auto; background:none; padding:0;}
+  .hljs-comment,.hljs-quote{color:var(--text-500); font-style:italic;}
+  .hljs-keyword,.hljs-selector-tag,.hljs-literal,.hljs-subst{color:var(--accent-500); font-weight:600;}
+  .hljs-string,.hljs-doctag,.hljs-regexp{color:#3b7a57;}
+  .hljs-number,.hljs-symbol{color:#7c8fa6;}
+  .hljs-title,.hljs-title.function_,.hljs-section,.hljs-selector-id{color:#8b5fbf; font-weight:600;}
+  .hljs-type,.hljs-class .hljs-title,.hljs-built_in{color:#b4574e;}
+  .hljs-attr,.hljs-attribute,.hljs-variable,.hljs-template-variable{color:#a85f30;}
+  .hljs-tag{color:var(--text-500);}
+  .hljs-name{color:var(--accent-500);}
+  .hljs-meta{color:var(--text-400);}
+  .hljs-deletion{background:rgba(219,124,114,.15);}
+  .hljs-addition{background:rgba(143,203,138,.18);}
+  .hljs-emphasis{font-style:italic;}
+  .hljs-strong{font-weight:700;}
+  [data-theme="night"] .hljs-comment,[data-theme="night"] .hljs-quote{color:#8b93a1;}
+  [data-theme="night"] .hljs-keyword,[data-theme="night"] .hljs-selector-tag,[data-theme="night"] .hljs-literal{color:var(--accent-300);}
+  [data-theme="night"] .hljs-string,[data-theme="night"] .hljs-doctag{color:#8fcb8a;}
+  [data-theme="night"] .hljs-number{color:#8fb6e3;}
+  [data-theme="night"] .hljs-title,[data-theme="night"] .hljs-title.function_{color:#c9a3e8;}
+  [data-theme="night"] .hljs-type,[data-theme="night"] .hljs-built_in{color:#ee9dbb;}
+
   .ink-canvas{position:absolute; top:0; left:0; width:100%; height:100%; touch-action:none; z-index:5;}
   .ink-canvas.inactive{pointer-events:none;}
   .ink-canvas.highlight-layer{z-index:4; pointer-events:none; mix-blend-mode:multiply;}
@@ -434,7 +492,7 @@
   .ink-actions-row .btn .icon{width:15px; height:15px;}
   .ink-actions-row .btn:disabled{opacity:.4; pointer-events:none;}
   .ink-size-btn.active{border-color:var(--accent-400); color:var(--accent-500); background:var(--accent-wash);}
-  .ink-clear-btn{width:100%; justify-content:center;}
+  .ink-clear-btn{width:100%; justify-content:center; margin-top:8px;}
 
   /* tablet / desktop: two-column library */
   @media (min-width:720px){
@@ -548,7 +606,7 @@
       </div>
     </div>
 
-    <input type="file" id="fileInput" accept=".md,.markdown,text/markdown,text/plain" multiple>
+    <input type="file" id="fileInput" accept=".md,.markdown,text/markdown,text/plain,.png,.jpg,.jpeg,.gif,.webp,.svg,image/*" multiple>
   </section>
 
   <!-- ============ READER SCREEN ============ -->
@@ -647,8 +705,12 @@
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5A5.5 5.5 0 0 1 20 14.5v0A5.5 5.5 0 0 1 14.5 20H11"/></svg>
               되돌리기
             </button>
-            <button class="btn btn-ghost" id="inkClearBtn">전체 지우기</button>
+            <button class="btn btn-ghost" id="inkRedoBtn" disabled>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14l5-5-5-5"/><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5v0A5.5 5.5 0 0 0 9.5 20H13"/></svg>
+              다시하기
+            </button>
           </div>
+          <button class="btn btn-ghost ink-clear-btn" id="inkClearBtn">전체 지우기</button>
         </div>
       </div>
     </div>
@@ -1346,6 +1408,7 @@
       files = files.filter(x=>x.id!==f.id);
       await persistFiles();
       await S.del("file-content:"+f.id);
+      await S.del("assets:"+f.id);
       for(const idx of (f.inkChapters||[])) await S.del("ink:"+f.id+":"+idx);
       if(fb && fb.currentUser) deleteFileFromCloud(fb.currentUser.uid, f);
       closeAllOverlays();
@@ -1357,34 +1420,69 @@
   const uploadInput = $("fileInput");
   $("uploadBtn").addEventListener("click", ()=> uploadInput.click());
   uploadInput.addEventListener("change", (e)=>{
-    Array.from(e.target.files).forEach(handleFile);
+    handleFileBatch(Array.from(e.target.files));
     uploadInput.value = "";
   });
 
-  function handleFile(file){
-    if(!file) return;
-    if(!/\.(md|markdown)$/i.test(file.name) && file.type !== "text/markdown" && file.type !== "text/plain") return;
-    const reader = new FileReader();
-    reader.onload = async (e)=>{
-      await libraryReady;
-      const text = e.target.result;
-      const id = genId();
-      const h1 = text.match(/^#\s+(.*)/m);
-      const title = h1 ? h1[1].trim() : file.name.replace(/\.(md|markdown)$/i,"");
-      const chapters = splitChapters(text, title);
-      await S.setText("file-content:"+id, text);
-      files.push({
-        id, name:file.name, title,
-        folderId: currentParentId(),
-        chapterCount: chapters.length,
-        createdTs: Date.now(),
-        updatedTs: Date.now(),
-        progress: {chapterIdx:0, pct:0, fontSize:18, theme:"light"}
-      });
-      await persistFiles();
-      renderAll();
-    };
-    reader.readAsText(file, "utf-8");
+  function readFileAsDataURL(file){
+    return new Promise((resolve, reject)=>{
+      const r = new FileReader();
+      r.onload = ()=> resolve(r.result);
+      r.onerror = ()=> reject(r.error);
+      r.readAsDataURL(file);
+    });
+  }
+  const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg)$/i;
+
+  // A drop/pick can contain one or more .md files plus the images they
+  // reference by relative path (no folder upload, so images just ride along
+  // in the same batch) — collect the images first, then thread them through
+  // to each .md file so <img src="local.png"> can resolve to a data: URL.
+  async function handleFileBatch(fileList){
+    const mdFiles = fileList.filter(f=> /\.(md|markdown)$/i.test(f.name));
+    const assetFiles = fileList.filter(f=> IMAGE_EXT_RE.test(f.name));
+    if(mdFiles.length===0) return;
+    let assetMap = {};
+    if(assetFiles.length){
+      for(const af of assetFiles){
+        try{ assetMap[af.name] = await readFileAsDataURL(af); }catch(e){}
+      }
+    }
+    for(const mf of mdFiles) await handleFile(mf, assetMap);
+  }
+
+  function handleFile(file, assetMap){
+    if(!file) return Promise.resolve();
+    if(!/\.(md|markdown)$/i.test(file.name) && file.type !== "text/markdown" && file.type !== "text/plain") return Promise.resolve();
+    return new Promise((resolve)=>{
+      const reader = new FileReader();
+      reader.onload = async (e)=>{
+        await libraryReady;
+        const text = e.target.result;
+        const id = genId();
+        const h1 = text.match(/^#\s+(.*)/m);
+        const title = h1 ? h1[1].trim() : file.name.replace(/\.(md|markdown)$/i,"");
+        const chapters = splitChapters(text, title, null); // count-only; images resolved at read time
+        await S.setText("file-content:"+id, text);
+        if(assetMap && Object.keys(assetMap).length){
+          const used = {};
+          Object.keys(assetMap).forEach(name=>{ if(text.includes(name)) used[name] = assetMap[name]; });
+          if(Object.keys(used).length) await S.setJSON("assets:"+id, used);
+        }
+        files.push({
+          id, name:file.name, title,
+          folderId: currentParentId(),
+          chapterCount: chapters.length,
+          createdTs: Date.now(),
+          updatedTs: Date.now(),
+          progress: {chapterIdx:0, pct:0, fontSize:18, theme:"light"}
+        });
+        await persistFiles();
+        renderAll();
+        resolve();
+      };
+      reader.readAsText(file, "utf-8");
+    });
   }
 
   const dragOverlay = $("dragOverlay");
@@ -1408,12 +1506,49 @@
     dragCounter = 0;
     dragOverlay.classList.remove("show");
     const dt = e.dataTransfer;
-    if(dt && dt.files) Array.from(dt.files).forEach(handleFile);
+    if(dt && dt.files) handleFileBatch(Array.from(dt.files));
   });
   function readerScreenVisible(){ return !$("readerScreen").classList.contains("hidden"); }
 
   /* ---------------- markdown -> chapters ---------------- */
-  function splitChapters(md, fallbackTitle){
+  // LaTeX math ($...$ inline, $$...$$ block) is pulled out into placeholders
+  // before marked sees the text — otherwise marked would mangle underscores/
+  // asterisks inside expressions as bold/italic — then KaTeX-rendered back in
+  // after parsing. Placeholders use characters marked won't touch.
+  function extractMath(md){
+    const store = [];
+    let text = md.replace(/\$\$([\s\S]+?)\$\$/g, (m, expr)=>{
+      store.push({expr, display:true});
+      return "@@MATH"+(store.length-1)+"@@";
+    });
+    text = text.replace(/\$([^\$\n]+?)\$/g, (m, expr)=>{
+      store.push({expr, display:false});
+      return "@@MATH"+(store.length-1)+"@@";
+    });
+    return {text, store};
+  }
+  function injectMath(html, store){
+    if(!store.length || typeof katex === "undefined") return html;
+    return html.replace(/@@MATH(\d+)@@/g, (m, i)=>{
+      const entry = store[Number(i)];
+      if(!entry) return m;
+      try{ return katex.renderToString(entry.expr, {throwOnError:false, displayMode:entry.display}); }
+      catch(e){ return m; }
+    });
+  }
+  // Rewrites <img src="relative-name.png"> to the matching data: URL from an
+  // uploaded-alongside-the-md asset map; remote/data URLs pass through untouched.
+  function applyLocalImages(html, assetMap){
+    if(!assetMap || !Object.keys(assetMap).length) return html;
+    return html.replace(/(<img\b[^>]*\bsrc=")([^"]+)(")/gi, (m, pre, src, post)=>{
+      if(/^(https?:|data:)/i.test(src)) return m;
+      let name = src;
+      try{ name = decodeURIComponent(src); }catch(e){}
+      const asset = assetMap[src] || assetMap[name] || assetMap[name.split("/").pop()];
+      return asset ? (pre + asset + post) : m;
+    });
+  }
+  function splitChapters(md, fallbackTitle, assetMap){
     const lines = md.split("\n");
     const headIdx = [];
     lines.forEach((line,i)=>{ if(/^#{1,2}\s+\S/.test(line)) headIdx.push(i); });
@@ -1433,7 +1568,14 @@
     } else {
       chunks.push({title: fallbackTitle, text: md});
     }
-    return chunks.map(c=>({title:c.title, html: marked.parse(c.text)}));
+    return chunks.map(c=>{
+      const {text: mathSafeText, store} = extractMath(c.text);
+      let html = marked.parse(mathSafeText);
+      html = injectMath(html, store);
+      html = applyLocalImages(html, assetMap);
+      html = DOMPurify.sanitize(html);
+      return {title:c.title, html};
+    });
   }
 
   /* ---------------- reader state ---------------- */
@@ -1462,8 +1604,9 @@
     if(!f) return;
     const text = await S.getText("file-content:"+id);
     if(text==null) return;
+    const assetMap = await S.getJSON("assets:"+id, null);
     activeFile = f;
-    activeChapters = splitChapters(text, f.title);
+    activeChapters = splitChapters(text, f.title, assetMap);
     fontSize = (f.progress && f.progress.fontSize) || 18;
     theme = (f.progress && f.progress.theme) || "light";
     applyFont(); applyTheme();
@@ -1484,6 +1627,7 @@
   async function renderChapter(idx, resetScroll){
     chapterIdx = Math.max(0, Math.min(idx, activeChapters.length-1));
     readInner.innerHTML = activeChapters[chapterIdx].html;
+    readInner.querySelectorAll("pre code").forEach(block=>{ try{ hljs.highlightElement(block); }catch(e){} });
     if(resetScroll !== false) readScroll.scrollTop = 0;
     chapterIndicator.textContent = (chapterIdx+1) + " / " + activeChapters.length;
     $("prevBtn").disabled = chapterIdx === 0;
@@ -1661,13 +1805,15 @@
   let inkActivePointerId = null;
   let inkActiveStylusId = null;   // palm rejection: pointerId of the stylus currently down
   let inkLastPenActivityTs = 0;   // palm rejection: ignore touch shortly after/around pen use
+  let inkRedoStack = [];          // per-chapter; a fresh stroke clears it, like any undo/redo stack
 
   function inkKey(){ return activeFile ? "ink:"+activeFile.id+":"+chapterIdx : null; }
 
   async function loadInkForChapter(){
     const key = inkKey();
     inkStrokes = key ? await S.getJSON(key, []) : [];
-    updateInkUndoButton();
+    inkRedoStack = [];
+    updateInkUndoButtons();
   }
   async function saveInkForChapter(){
     const key = inkKey();
@@ -1737,16 +1883,35 @@
     }
   }
 
+  // Smooths a raw point list into a quadratic-curve path: each real point
+  // becomes a curve control point, with the midpoint between consecutive
+  // points as the curve's on-path endpoint — the standard freehand-smoothing
+  // technique, avoids the faceted look of plain point-to-point lineTo.
+  function tracePath(ctx, points, w, h){
+    if(points.length === 1){
+      const p = points[0];
+      ctx.moveTo(p[0]*w, p[1]*h);
+      ctx.lineTo(p[0]*w, p[1]*h);
+      return;
+    }
+    ctx.moveTo(points[0][0]*w, points[0][1]*h);
+    let i;
+    for(i=1;i<points.length-1;i++){
+      const cx = (points[i][0]+points[i+1][0])/2*w;
+      const cy = (points[i][1]+points[i+1][1])/2*h;
+      ctx.quadraticCurveTo(points[i][0]*w, points[i][1]*h, cx, cy);
+    }
+    const last = points[points.length-1];
+    ctx.lineTo(last[0]*w, last[1]*h);
+  }
+
   function paintStroke(stroke, w, h){
-    if(stroke.points.length < 2) return;
+    if(stroke.points.length < 1) return;
     const ctx = ctxForTool(stroke.tool);
     ctx.save();
     applyStrokeStyle(ctx, stroke.tool, stroke.color, stroke.width);
     ctx.beginPath();
-    stroke.points.forEach((p,i)=>{
-      const x = p[0]*w, y = p[1]*h;
-      if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
-    });
+    tracePath(ctx, stroke.points, w, h);
     ctx.stroke();
     ctx.restore();
   }
@@ -1774,14 +1939,22 @@
 
   function undoLastStroke(){
     if(inkStrokes.length===0) return;
-    inkStrokes.pop();
+    inkRedoStack.push(inkStrokes.pop());
     saveInkForChapter();
     redrawInk();
-    updateInkUndoButton();
+    updateInkUndoButtons();
   }
-  function updateInkUndoButton(){
-    const btn = $("inkUndoBtn");
-    if(btn) btn.disabled = inkStrokes.length===0;
+  function redoLastStroke(){
+    if(inkRedoStack.length===0) return;
+    inkStrokes.push(inkRedoStack.pop());
+    saveInkForChapter();
+    redrawInk();
+    updateInkUndoButtons();
+  }
+  function updateInkUndoButtons(){
+    const undoBtn = $("inkUndoBtn"), redoBtn = $("inkRedoBtn");
+    if(undoBtn) undoBtn.disabled = inkStrokes.length===0;
+    if(redoBtn) redoBtn.disabled = inkRedoStack.length===0;
   }
 
   // Brush-size cursor ring: only for pen/mouse (hover-capable pointers) — a
@@ -1864,8 +2037,12 @@
       if(!inkDrawing || (e && e.pointerId!==undefined && e.pointerId!==inkActivePointerId)) return;
       if(inkDrawing.points.length>1){
         inkStrokes.push(inkDrawing);
+        inkRedoStack = [];
         saveInkForChapter();
-        updateInkUndoButton();
+        updateInkUndoButtons();
+        // the live preview drew plain segments for low-latency feedback;
+        // redraw now so the committed stroke gets the smoothed curve treatment
+        redrawInk();
       }
       inkDrawing = null;
       inkActivePointerId = null;
@@ -1937,11 +2114,13 @@
     });
   });
   $("inkUndoBtn").addEventListener("click", undoLastStroke);
+  $("inkRedoBtn").addEventListener("click", redoLastStroke);
   $("inkClearBtn").addEventListener("click", ()=>{
     inkStrokes = [];
+    inkRedoStack = [];
     saveInkForChapter();
     redrawInk();
-    updateInkUndoButton();
+    updateInkUndoButtons();
   });
 
   window.addEventListener("resize", ()=>{
@@ -1961,7 +2140,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "14";
+  const SW_VERSION = "15";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller

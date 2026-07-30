@@ -1,8 +1,8 @@
 // 서재 — app-shell service worker.
 // Precaches the shell (HTML/CSS-in-HTML/JS/icons/vendor lib) so the reader still
 // opens offline; book content itself lives in IndexedDB, not here.
-const SHELL_CACHE = "seojae-shell-v14";
-const RUNTIME_CACHE = "seojae-runtime-v14";
+const SHELL_CACHE = "seojae-shell-v15";
+const RUNTIME_CACHE = "seojae-runtime-v15";
 const CURRENT_CACHES = [SHELL_CACHE, RUNTIME_CACHE];
 
 const SHELL_URLS = [
@@ -10,6 +10,51 @@ const SHELL_URLS = [
   "./index.html",
   "./manifest.json",
   "./vendor/marked.min.js",
+  "./vendor/purify.min.js",
+  "./vendor/highlight.min.js",
+  "./vendor/hljs-languages/bash.min.js",
+  "./vendor/hljs-languages/c.min.js",
+  "./vendor/hljs-languages/cpp.min.js",
+  "./vendor/hljs-languages/csharp.min.js",
+  "./vendor/hljs-languages/css.min.js",
+  "./vendor/hljs-languages/go.min.js",
+  "./vendor/hljs-languages/java.min.js",
+  "./vendor/hljs-languages/javascript.min.js",
+  "./vendor/hljs-languages/json.min.js",
+  "./vendor/hljs-languages/kotlin.min.js",
+  "./vendor/hljs-languages/markdown.min.js",
+  "./vendor/hljs-languages/php.min.js",
+  "./vendor/hljs-languages/plaintext.min.js",
+  "./vendor/hljs-languages/python.min.js",
+  "./vendor/hljs-languages/ruby.min.js",
+  "./vendor/hljs-languages/rust.min.js",
+  "./vendor/hljs-languages/sql.min.js",
+  "./vendor/hljs-languages/swift.min.js",
+  "./vendor/hljs-languages/typescript.min.js",
+  "./vendor/hljs-languages/xml.min.js",
+  "./vendor/hljs-languages/yaml.min.js",
+  "./vendor/katex/katex.min.css",
+  "./vendor/katex/katex.min.js",
+  "./vendor/katex/fonts/KaTeX_AMS-Regular.woff2",
+  "./vendor/katex/fonts/KaTeX_Caligraphic-Bold.woff2",
+  "./vendor/katex/fonts/KaTeX_Caligraphic-Regular.woff2",
+  "./vendor/katex/fonts/KaTeX_Fraktur-Bold.woff2",
+  "./vendor/katex/fonts/KaTeX_Fraktur-Regular.woff2",
+  "./vendor/katex/fonts/KaTeX_Main-Bold.woff2",
+  "./vendor/katex/fonts/KaTeX_Main-BoldItalic.woff2",
+  "./vendor/katex/fonts/KaTeX_Main-Italic.woff2",
+  "./vendor/katex/fonts/KaTeX_Main-Regular.woff2",
+  "./vendor/katex/fonts/KaTeX_Math-BoldItalic.woff2",
+  "./vendor/katex/fonts/KaTeX_Math-Italic.woff2",
+  "./vendor/katex/fonts/KaTeX_SansSerif-Bold.woff2",
+  "./vendor/katex/fonts/KaTeX_SansSerif-Italic.woff2",
+  "./vendor/katex/fonts/KaTeX_SansSerif-Regular.woff2",
+  "./vendor/katex/fonts/KaTeX_Script-Regular.woff2",
+  "./vendor/katex/fonts/KaTeX_Size1-Regular.woff2",
+  "./vendor/katex/fonts/KaTeX_Size2-Regular.woff2",
+  "./vendor/katex/fonts/KaTeX_Size3-Regular.woff2",
+  "./vendor/katex/fonts/KaTeX_Size4-Regular.woff2",
+  "./vendor/katex/fonts/KaTeX_Typewriter-Regular.woff2",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
   "./icons/icon-maskable-512.png",
