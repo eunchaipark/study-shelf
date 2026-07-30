@@ -197,14 +197,14 @@
   @media (hover:hover) and (pointer:fine){ .account-signin-btn:hover{background:var(--bg-sunken-2); border-color:var(--text-400);} }
   .account-signin-btn .icon{width:16px; height:16px;}
   .account-error{font-size:11px; color:var(--danger); margin-top:6px; line-height:1.4; padding:0 2px;}
-  .auth-debug-box{
-    font-family:'SFMono-Regular',Consolas,monospace; font-size:9.5px; line-height:1.5; color:var(--text-500);
-    background:var(--bg-sunken); border-radius:8px; padding:8px; margin-top:8px; max-height:180px; overflow-y:auto;
-    word-break:break-all; user-select:text;
-  }
   .account-row{display:flex; align-items:center; gap:9px; padding:6px; border-radius:var(--r-sm); transition:background-color .15s var(--ease);}
   @media (hover:hover) and (pointer:fine){ .account-row:hover{background:var(--bg-sunken);} }
-  .account-avatar{width:30px; height:30px; border-radius:50%; flex:0 0 auto; background:var(--bg-sunken-2); object-fit:cover;}
+  .account-avatar-wrap{position:relative; flex:0 0 auto;}
+  .account-avatar{width:30px; height:30px; border-radius:50%; display:block; background:var(--bg-sunken-2); object-fit:cover;}
+  .account-sync-dot{display:none; position:absolute; right:-1px; bottom:-1px; width:8px; height:8px; border-radius:50%; background:var(--text-400); border:2px solid var(--surface);}
+  .account-sync-dot.synced{background:#67a782;}
+  .account-sync-dot.syncing{background:var(--accent-400); animation:sync-pulse 1s ease-in-out infinite;}
+  .account-sync-dot.error{background:var(--danger);}
   .account-info{flex:1; min-width:0;}
   .account-name{font-size:12.5px; font-weight:600; color:var(--text-900); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
   .account-sync-status{font-size:10.5px; color:var(--text-400); display:flex; align-items:center; gap:4px; margin-top:1px;}
@@ -215,6 +215,14 @@
   @keyframes sync-pulse{0%,100%{opacity:1;} 50%{opacity:.35;}}
   .account-menu-btn{width:26px; height:26px; border-radius:6px; border:none; background:transparent; color:var(--text-400); flex:0 0 auto; display:flex; align-items:center; justify-content:center;}
   .account-menu-btn:active{background:var(--bg-sunken-2);}
+  .menu-account-id{font-size:11.5px; color:var(--text-500); padding:6px 10px 8px; border-bottom:1px solid var(--line); margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px;}
+  /* mobile: the folder rail is a compact horizontal strip, not a tall
+     sidebar — a two-line name+status block there ate too much of it, so
+     collapse to just the avatar with a small sync-state dot on its corner. */
+  @media (max-width:719px){
+    .account-info{display:none;}
+    .account-sync-dot{display:block;}
+  }
   .rail-row{display:flex; gap:8px; overflow-x:auto; overflow-y:hidden; white-space:nowrap; -webkit-overflow-scrolling:touch;}
   .rail-crumbs{display:flex; align-items:center; gap:3px; overflow-x:auto; white-space:nowrap; -webkit-overflow-scrolling:touch;}
   .crumb-item{background:none; border:none; padding:3px 3px; font-size:12px; font-weight:600; color:var(--text-500); border-radius:6px; flex:0 0 auto; transition:color .15s var(--ease);}
@@ -860,20 +868,9 @@
   let syncInFlight = false;
 
   let lastAuthError = null; // surfaced in the account rail so sign-in failures aren't silent
-  // Visible-on-screen trace for the sign-in flow. Was essential for
-  // diagnosing why signInWithRedirect never completed on mobile (see GIS
-  // note below) — kept around since it's cheap and still useful for
-  // reporting future sign-in problems.
-  let authDebugLines = [];
-  try{ authDebugLines = JSON.parse(sessionStorage.getItem("authDebugLines") || "[]"); }catch(e){}
 
   function authDebug(msg){
-    const line = new Date().toISOString().slice(11,19) + " " + msg;
-    authDebugLines.push(line);
-    if(authDebugLines.length > 30) authDebugLines = authDebugLines.slice(-30);
-    try{ sessionStorage.setItem("authDebugLines", JSON.stringify(authDebugLines)); }catch(e){}
-    console.log("[authDebug]", msg);
-    renderAccount();
+    console.log("[auth]", msg);
   }
 
   let firebaseLoadingPromise = null;
@@ -985,18 +982,17 @@
   }
 
   function setSyncStatus(state){
-    const el = document.querySelector(".account-sync-status");
-    if(!el) return;
-    el.className = "account-sync-status" + (state ? " " + state : "");
-    el.querySelector(".label") && (el.querySelector(".label").textContent =
-      state==="syncing" ? "동기화 중" : state==="error" ? "동기화 실패" : state==="synced" ? "동기화됨" : "");
-  }
-
-  // Renders the on-screen sign-in trace (see authDebug above) under the
-  // account button so problems are reportable without console access.
-  function renderAuthDebugBox(){
-    if(!authDebugLines.length) return "";
-    return '<div class="auth-debug-box">'+authDebugLines.map(l=>escapeHtml(l)).join("<br>")+'</div>';
+    const label = state==="syncing" ? "동기화 중" : state==="error" ? "동기화 실패" : state==="synced" ? "동기화됨" : "";
+    const statusEl = document.querySelector(".account-sync-status");
+    if(statusEl){
+      statusEl.className = "account-sync-status" + (state ? " " + state : "");
+      statusEl.querySelector(".label") && (statusEl.querySelector(".label").textContent = label);
+    }
+    const dotEl = document.querySelector(".account-sync-dot");
+    if(dotEl){
+      dotEl.className = "account-sync-dot" + (state ? " " + state : "");
+      dotEl.title = label;
+    }
   }
 
   function renderAccount(){
@@ -1008,24 +1004,26 @@
           '<svg class="icon" viewBox="0 0 24 24"><path fill="#EA4335" d="M12 10.2v3.9h5.5c-.24 1.3-1.7 3.8-5.5 3.8-3.3 0-6-2.7-6-6.1s2.7-6.1 6-6.1c1.9 0 3.1.8 3.9 1.5l2.6-2.5C16.9 3.2 14.7 2.2 12 2.2 6.9 2.2 2.8 6.4 2.8 11.6S6.9 21 12 21c6.9 0 8.9-4.9 8.9-8.9 0-.6-.1-1.1-.2-1.6H12z"/></svg>'+
           '<span>Google로 로그인</span>'+
         '</button>'+
-        (lastAuthError ? '<div class="account-error">로그인 실패: '+escapeHtml(lastAuthError)+'</div>' : '')+
-        renderAuthDebugBox();
+        (lastAuthError ? '<div class="account-error">로그인 실패: '+escapeHtml(lastAuthError)+'</div>' : '');
       $("signInBtn").addEventListener("click", signInWithGoogle);
       return;
     }
     const u = fb.currentUser;
+    const name = u.displayName || u.email || "";
     el.innerHTML =
       '<div class="account-row">'+
-        '<img class="account-avatar" src="'+escapeHtml(u.photoURL||"")+'" alt="">'+
+        '<div class="account-avatar-wrap">'+
+          '<img class="account-avatar" src="'+escapeHtml(u.photoURL||"")+'" alt="">'+
+          '<span class="account-sync-dot"></span>'+
+        '</div>'+
         '<div class="account-info">'+
-          '<div class="account-name">'+escapeHtml(u.displayName||u.email||"")+'</div>'+
+          '<div class="account-name">'+escapeHtml(name)+'</div>'+
           '<div class="account-sync-status"><span class="dot"></span><span class="label">동기화됨</span></div>'+
         '</div>'+
         '<button class="account-menu-btn" id="accountMenuBtn" aria-label="계정 메뉴">'+
           '<svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>'+
         '</button>'+
-      '</div>'+
-      renderAuthDebugBox();
+      '</div>';
     $("accountMenuBtn").addEventListener("click", (e)=>{
       e.stopPropagation();
       closeAllOverlays();
@@ -1035,7 +1033,9 @@
       menu.className = "menu-pop";
       menu.style.bottom = (window.innerHeight - rect.top + 6) + "px";
       menu.style.left = Math.max(10, rect.left - 120) + "px";
-      menu.innerHTML = '<button class="menu-item danger" id="signOutBtn">로그아웃</button>';
+      menu.innerHTML =
+        '<div class="menu-account-id">'+escapeHtml(name)+'</div>'+
+        '<button class="menu-item danger" id="signOutBtn">로그아웃</button>';
       document.body.appendChild(menu);
       $("signOutBtn").addEventListener("click", async ()=>{ closeAllOverlays(); await signOutOfCloud(); });
     });
@@ -2268,7 +2268,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "21";
+  const SW_VERSION = "22";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
