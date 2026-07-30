@@ -875,12 +875,46 @@
     renderAccount();
   }
 
+  async function dumpIndexedDBDiagnostics(){
+    try{
+      if(!indexedDB.databases){ authDebug("indexedDB.databases() 미지원"); return; }
+      const dbs = await indexedDB.databases();
+      authDebug("IndexedDB 목록: ["+dbs.map(d=>d.name+"@v"+d.version).join(", ")+"]");
+      const fbDb = dbs.find(d=> /firebase/i.test(d.name||""));
+      if(fbDb){
+        const req = indexedDB.open(fbDb.name);
+        await new Promise((resolve)=>{
+          req.onsuccess = ()=>{
+            const db = req.result;
+            authDebug("firebaseLocalStorageDb 스토어: ["+Array.from(db.objectStoreNames).join(", ")+"]");
+            const storeName = Array.from(db.objectStoreNames)[0];
+            if(storeName){
+              const tx = db.transaction(storeName, "readonly");
+              const getAllReq = tx.objectStore(storeName).getAllKeys();
+              getAllReq.onsuccess = ()=>{
+                authDebug("저장된 키: ["+getAllReq.result.join(", ")+"]");
+                resolve();
+              };
+              getAllReq.onerror = ()=> resolve();
+            } else resolve();
+          };
+          req.onerror = ()=>{ authDebug("firebaseLocalStorageDb 열기 실패"); resolve(); };
+        });
+      } else {
+        authDebug("firebase 관련 IndexedDB 없음 (저장 자체가 안 됨)");
+      }
+    }catch(e){
+      authDebug("IndexedDB 진단 실패: "+e);
+    }
+  }
+
   let firebaseLoadingPromise = null;
   async function ensureFirebase(){
     if(fb) return fb;
     if(firebaseLoadingPromise) return firebaseLoadingPromise;
     firebaseLoadingPromise = (async ()=>{
-      authDebug("초기화 시작 url="+location.href.slice(0,60));
+      authDebug("초기화 시작 url="+location.href.slice(0,60)+" ref="+(document.referrer||"(없음)").slice(0,50));
+      await dumpIndexedDBDiagnostics();
       try{
         const [appMod, authMod, fsMod] = await Promise.all([
           import(FB_SDK + "firebase-app.js"),
@@ -2248,7 +2282,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "18";
+  const SW_VERSION = "19";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
