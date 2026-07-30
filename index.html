@@ -1862,6 +1862,91 @@
   });
   $("overlay").addEventListener("click", ()=>{ closeDrawer(); closeSettings(); closeInkPop(); });
 
+  // Touch-drag for the TOC drawer (phones + tablets): swipe in from the left
+  // screen edge to open it, drag it left to close — not just tap-to-toggle.
+  // Mobile animates transform (overlay drawer); tablet animates width (in-
+  // flow panel) — see the .drawer CSS. Direction is locked from the first
+  // real move so this never steals a vertical scroll inside the TOC list,
+  // the same disambiguation the chapter page-turn swipe above already uses.
+  (function setupDrawerSwipe(){
+    const EDGE_ZONE = 24;
+    const VERTICAL_TOLERANCE = 1.5;
+    let dragging = false, undecided = false, dragMode = null;
+    let startX = 0, startY = 0, maxW = 300;
+
+    function drawerMaxWidth(){ return isTabletUp() ? 300 : Math.min(300, window.innerWidth * 0.82); }
+    function setDragPx(px){
+      const clamped = Math.max(0, Math.min(maxW, px));
+      if(isTabletUp()){
+        drawer.style.width = clamped + "px";
+      } else {
+        drawer.style.transform = "translateX(" + (clamped - maxW) + "px)";
+        $("overlay").classList.add("show");
+        $("overlay").style.opacity = String(clamped / maxW);
+      }
+    }
+    function finishDrag(open, finalPx){
+      drawer.style.transition = "none";
+      setDragPx(finalPx);
+      // force a paint with transition still off before re-enabling it, so
+      // the browser has an actual "before" frame to animate away from
+      drawer.getBoundingClientRect();
+      requestAnimationFrame(()=>{
+        drawer.style.transition = "";
+        drawer.style.width = "";
+        drawer.style.transform = "";
+        $("overlay").style.opacity = "";
+        if(open){ buildTOC(); openDrawer(); } else { closeDrawer(); }
+      });
+    }
+    function onStart(e){
+      if(!readerScreenVisible() || penMode) return;
+      const t = e.touches[0];
+      const isOpen = drawer.classList.contains("show");
+      if(isOpen){
+        if(!drawer.contains(e.target)) return;
+        dragMode = "close";
+      } else {
+        if(t.clientX > EDGE_ZONE) return;
+        dragMode = "open";
+      }
+      undecided = true; dragging = false;
+      startX = t.clientX; startY = t.clientY;
+      maxW = drawerMaxWidth();
+    }
+    function onMove(e){
+      if(!undecided && !dragging) return;
+      const t = e.touches[0];
+      const dx = t.clientX - startX, dy = t.clientY - startY;
+      if(undecided){
+        if(Math.abs(dx) < 6 && Math.abs(dy) < 6) return; // not enough movement yet to tell
+        undecided = false;
+        if(Math.abs(dx) < Math.abs(dy) * VERTICAL_TOLERANCE) return; // vertical — leave it to native scroll
+        dragging = true;
+        drawer.style.transition = "none";
+      }
+      if(!dragging) return;
+      e.preventDefault();
+      const base = dragMode === "close" ? maxW : 0;
+      setDragPx(base + dx);
+    }
+    function onEnd(e){
+      undecided = false;
+      if(!dragging){ return; }
+      dragging = false;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - startX;
+      const base = dragMode === "close" ? maxW : 0;
+      const finalPx = base + dx;
+      finishDrag(finalPx > maxW * 0.4, finalPx);
+    }
+    const body = $("readerBody");
+    body.addEventListener("touchstart", onStart, {passive:true});
+    body.addEventListener("touchmove", onMove, {passive:false});
+    body.addEventListener("touchend", onEnd, {passive:true});
+    body.addEventListener("touchcancel", onEnd, {passive:true});
+  })();
+
   function openSettings(){ settingsPop.classList.add("show"); $("overlay").classList.add("show"); }
   function closeSettings(){ settingsPop.classList.remove("show"); $("overlay").classList.remove("show"); }
   $("settingsBtn").addEventListener("click", (e)=>{
@@ -2270,7 +2355,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "24";
+  const SW_VERSION = "25";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
