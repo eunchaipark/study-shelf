@@ -263,6 +263,25 @@
   @media (hover:hover) and (pointer:fine){
     .folder-chip:not(.active):hover{border-color:var(--line-strong); color:var(--text-900); background:var(--bg-sunken-2);}
   }
+  .folder-chip.drag-over{border-color:var(--accent-400); background:var(--accent-wash); color:var(--accent-500);}
+
+  /* folder tree (tablet/desktop rail) — see renderFolderTree() */
+  .folder-tree{display:flex; flex-direction:column; gap:1px; margin-top:2px;}
+  .tree-item{
+    display:flex; align-items:center; gap:6px; width:100%; text-align:left;
+    padding:7px 8px; padding-left:calc(8px + var(--depth, 0) * 14px);
+    border-radius:var(--r-sm); border:1px solid transparent; background:transparent;
+    color:var(--text-700); font-size:13px; transition:background-color .15s var(--ease), border-color .15s var(--ease);
+  }
+  .tree-item .count{margin-left:auto; padding-left:8px; color:var(--text-400); font-size:11px; font-variant-numeric:tabular-nums; flex:0 0 auto;}
+  .tree-item.active{background:var(--accent-wash); color:var(--accent-500); font-weight:600;}
+  .tree-item.drag-over{border-color:var(--accent-400); background:var(--accent-wash);}
+  @media (hover:hover) and (pointer:fine){ .tree-item:not(.active):hover{background:var(--bg-sunken);} }
+  .tree-caret{width:16px; height:16px; flex:0 0 auto; display:flex; align-items:center; justify-content:center; color:var(--text-400); transition:transform .15s var(--ease);}
+  .tree-caret.empty{visibility:hidden;}
+  .tree-caret.open{transform:rotate(90deg);}
+  .tree-caret .icon{width:13px; height:13px;}
+  .tree-name{flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 
   .lib-main{flex:1; overflow-y:auto; padding:var(--sp-4) var(--sp-4) 100px;}
 
@@ -842,6 +861,7 @@
   let files = [];     // [{id, name, title, folderId, chapterCount, createdTs, updatedTs, progress:{chapterIdx,fontSize,theme}}]
   let libView = "browse"; // 'browse' | 'all' | 'uncategorized'
   let folderPath = [];    // folder id trail for the drill-down view; [] = library root
+  let expandedFolders = new Set(); // tablet/desktop tree view: which folder ids are expanded
   let searchQuery = "";   // when non-empty, overrides libView with a flat title search
   let sortMode = "recent"; // 'recent' | 'name' | 'added' | 'progress'
   let density = "comfortable"; // 'comfortable' | 'compact'
@@ -1254,6 +1274,39 @@
     while(cur){ parts.unshift(cur.name); cur = cur.parentId ? folderById(cur.parentId) : null; }
     return parts.join(" › ");
   }
+  function folderAncestorPath(id){
+    const path=[];
+    let cur = folderById(id);
+    while(cur){ path.unshift(cur.id); cur = cur.parentId ? folderById(cur.parentId) : null; }
+    return path;
+  }
+  function moveFileToFolder(f, folderId){
+    f.folderId = folderId || null;
+    f.updatedTs = Date.now();
+    persistFiles();
+  }
+  function moveFolderToParent(folderId, newParentId){
+    const fo = folderById(folderId);
+    if(!fo || folderId === newParentId) return;
+    if(newParentId && descendantFolderIds(folderId).includes(newParentId)) return; // no cycles
+    fo.parentId = newParentId || null;
+    persistFolders();
+  }
+  // shared drop handler for both the tree and the 미분류 chip — reads
+  // whichever payload type dragstart attached (see file-card / tree-item
+  // dragstart handlers) and routes to the matching move function
+  function handleTreeDrop(e, targetFolderId){
+    const fileId = e.dataTransfer.getData("application/x-ss-file");
+    const folderId = e.dataTransfer.getData("application/x-ss-folder");
+    if(fileId){
+      const f = files.find(x=>x.id===fileId);
+      if(f) moveFileToFolder(f, targetFolderId);
+    } else if(folderId){
+      moveFolderToParent(folderId, targetFolderId);
+    }
+    if(targetFolderId) expandedFolders.add(targetFolderId); // reveal what just landed there
+    renderAll();
+  }
 
   /* ---------------- folder rail ---------------- */
   function renderFolderRail(){
@@ -1273,6 +1326,9 @@
     uncat.className = "folder-chip" + (libView==="uncategorized" ? " active":"");
     uncat.innerHTML = "미분류 <span class=\"count\">"+uncatCount+"</span>";
     uncat.addEventListener("click", ()=>{ resetSearch(); libView="uncategorized"; renderAll(); });
+    uncat.addEventListener("dragover", (e)=>{ e.preventDefault(); uncat.classList.add("drag-over"); });
+    uncat.addEventListener("dragleave", ()=> uncat.classList.remove("drag-over"));
+    uncat.addEventListener("drop", (e)=>{ e.preventDefault(); uncat.classList.remove("drag-over"); handleTreeDrop(e, null); });
     pinned.appendChild(uncat);
 
     const add = document.createElement("button");
@@ -1290,6 +1346,16 @@
       label.textContent = "검색 결과";
       note.appendChild(label);
       rail.appendChild(note);
+      return;
+    }
+
+    // Tablet/desktop: the rail is a tall sidebar, so show the whole folder
+    // hierarchy as an expandable tree (with drag-and-drop to reorganize).
+    // Phones: the rail is a horizontal chip strip, which a nested/indented
+    // tree doesn't suit — keep the existing one-level-at-a-time breadcrumb
+    // drill-down there instead.
+    if(isTabletUp()){
+      rail.appendChild(renderFolderTree());
       return;
     }
 
@@ -1331,6 +1397,74 @@
       });
       rail.appendChild(kidsRow);
     }
+  }
+
+  /* ---------------- folder tree (tablet/desktop) ---------------- */
+  function renderFolderTree(){
+    const container = document.createElement("div");
+    container.className = "folder-tree";
+
+    const rootRow = document.createElement("button");
+    rootRow.className = "tree-item" + (libView==="browse" && folderPath.length===0 ? " active" : "");
+    rootRow.innerHTML = '<span class="tree-caret empty"></span><span class="tree-name">서재</span>';
+    rootRow.addEventListener("click", ()=>{ libView="browse"; folderPath=[]; renderAll(); });
+    rootRow.addEventListener("dragover", (e)=>{ e.preventDefault(); rootRow.classList.add("drag-over"); });
+    rootRow.addEventListener("dragleave", ()=> rootRow.classList.remove("drag-over"));
+    rootRow.addEventListener("drop", (e)=>{ e.preventDefault(); rootRow.classList.remove("drag-over"); handleTreeDrop(e, null); });
+    container.appendChild(rootRow);
+
+    childFolders(null).forEach(fo => container.appendChild(renderFolderTreeNode(fo, 1)));
+    return container;
+  }
+
+  function renderFolderTreeNode(fo, depth){
+    const wrap = document.createElement("div");
+    const kids = childFolders(fo.id);
+    const expanded = expandedFolders.has(fo.id);
+    const isActive = libView==="browse" && currentParentId()===fo.id;
+
+    const item = document.createElement("button");
+    item.className = "tree-item" + (isActive ? " active" : "");
+    item.style.setProperty("--depth", depth);
+    item.innerHTML =
+      (kids.length
+        ? '<span class="tree-caret'+(expanded ? ' open' : '')+'"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></span>'
+        : '<span class="tree-caret empty"></span>') +
+      '<span class="tree-name">'+escapeHtml(fo.name)+'</span>'+
+      '<span class="count">'+folderFileCount(fo.id)+'</span>';
+    item.addEventListener("click", (e)=>{
+      if(kids.length && e.target.closest(".tree-caret")){
+        expandedFolders.has(fo.id) ? expandedFolders.delete(fo.id) : expandedFolders.add(fo.id);
+        renderFolderRail();
+        return;
+      }
+      libView="browse";
+      folderPath = folderAncestorPath(fo.id);
+      if(kids.length) expandedFolders.add(fo.id);
+      renderAll();
+    });
+
+    // drag source: pick this folder up to move it elsewhere
+    item.draggable = true;
+    item.addEventListener("dragstart", (e)=>{
+      e.stopPropagation();
+      e.dataTransfer.setData("application/x-ss-folder", fo.id);
+      e.dataTransfer.effectAllowed = "move";
+    });
+    // drop target: files or other folders dropped here move into this folder
+    item.addEventListener("dragover", (e)=>{ e.preventDefault(); item.classList.add("drag-over"); });
+    item.addEventListener("dragleave", ()=> item.classList.remove("drag-over"));
+    item.addEventListener("drop", (e)=>{
+      e.preventDefault(); e.stopPropagation();
+      item.classList.remove("drag-over");
+      handleTreeDrop(e, fo.id);
+    });
+
+    wrap.appendChild(item);
+    if(kids.length && expanded){
+      kids.forEach(k => wrap.appendChild(renderFolderTreeNode(k, depth+1)));
+    }
+    return wrap;
   }
 
   /* ---------------- file list ---------------- */
@@ -1404,6 +1538,15 @@
         '<button class="hit" aria-label="열기"></button>';
       card.querySelector(".hit").addEventListener("click", ()=> openBook(f.id));
       card.querySelector(".more-btn").addEventListener("click", (e)=>{ e.stopPropagation(); openFileMenu(e.currentTarget, f); });
+      // drag-to-reorganize onto the folder tree — tablet/desktop only (the
+      // tree itself, its only drop target, is also scoped to that width)
+      if(isTabletUp()){
+        card.draggable = true;
+        card.addEventListener("dragstart", (e)=>{
+          e.dataTransfer.setData("application/x-ss-file", f.id);
+          e.dataTransfer.effectAllowed = "move";
+        });
+      }
       grid.appendChild(card);
     });
     list.appendChild(grid);
@@ -1491,6 +1634,7 @@
       if(!name) return;
       folders.push({id:genId(), name, parentId});
       persistFolders();
+      if(parentId) expandedFolders.add(parentId); // reveal it in the tree immediately, not just after a manual expand
       closeAllOverlays();
       renderAll();
     };
@@ -1525,9 +1669,7 @@
 
     menu.querySelectorAll('[data-act="move"]').forEach(btn=>{
       btn.addEventListener("click", ()=>{
-        f.folderId = btn.dataset.folder || null;
-        f.updatedTs = Date.now();
-        persistFiles();
+        moveFileToFolder(f, btn.dataset.folder || null);
         closeAllOverlays();
         renderAll();
       });
@@ -1662,21 +1804,28 @@
 
   const dragOverlay = $("dragOverlay");
   let dragCounter = 0;
+  // Only react to a real OS file drag (dataTransfer carries "Files") — the
+  // folder tree's internal drag-to-reorganize uses its own custom MIME
+  // types (application/x-ss-file / -folder) and bubbles up through here
+  // too, which was incorrectly popping up the "drop files to upload"
+  // overlay during an ordinary reorganize drag.
+  function isOsFileDrag(e){ return !!(e.dataTransfer && Array.from(e.dataTransfer.types||[]).includes("Files")); }
   ["dragenter","dragover"].forEach(ev=>{
     document.addEventListener(ev, (e)=>{
-      if(readerScreenVisible()) return;
+      if(readerScreenVisible() || !isOsFileDrag(e)) return;
       e.preventDefault();
       if(ev==="dragenter"){ dragCounter++; dragOverlay.classList.add("show"); }
     });
   });
   ["dragleave"].forEach(ev=>{
     document.addEventListener(ev, (e)=>{
+      if(!isOsFileDrag(e)) return;
       dragCounter = Math.max(0, dragCounter-1);
       if(dragCounter===0) dragOverlay.classList.remove("show");
     });
   });
   document.addEventListener("drop", (e)=>{
-    if(readerScreenVisible()) return;
+    if(readerScreenVisible() || !isOsFileDrag(e)) return;
     e.preventDefault();
     dragCounter = 0;
     dragOverlay.classList.remove("show");
@@ -2458,7 +2607,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "29";
+  const SW_VERSION = "30";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
