@@ -137,11 +137,31 @@
   }
 
   .lib-search-bar{
-    display:flex; flex-direction:column; gap:8px;
+    position:relative; display:flex; flex-direction:column; gap:8px;
     padding:10px 16px; border-bottom:1px solid var(--line); background:var(--surface); flex:0 0 auto;
   }
   .search-row{display:flex;}
   .controls-row{display:flex; align-items:center; gap:8px;}
+  .search-toggle-btn{
+    display:none; flex:0 0 auto; width:34px; height:34px; border-radius:var(--r-sm);
+    border:1px solid transparent; background:var(--bg-sunken); color:var(--text-500);
+    align-items:center; justify-content:center; transition:background-color .15s var(--ease), color .15s var(--ease);
+  }
+  .search-toggle-btn .icon{width:16px; height:16px;}
+  .search-toggle-btn.active{background:var(--accent-wash); color:var(--accent-500);}
+  /* phones: the search bar sat above the controls row as its own full row
+     every time, permanently spending height on something used occasionally
+     — collapse it into a small button that drops the input down as an
+     overlay on demand instead. Sort/density controls stay always visible. */
+  @media (max-width:719px){
+    .search-toggle-btn{display:flex;}
+    .search-row{display:none;}
+    .search-row.open{
+      display:flex; position:absolute; left:16px; right:16px; top:100%;
+      margin-top:-8px; padding:10px 0 12px; background:var(--surface);
+      border-bottom:1px solid var(--line); box-shadow:var(--shadow-lg); z-index:20;
+    }
+  }
   .search-field{position:relative; flex:1; display:flex; align-items:center;}
   .search-field .icon{position:absolute; left:10px; width:16px; height:16px; color:var(--text-400); pointer-events:none;}
   .search-field input{
@@ -586,6 +606,9 @@
         </div>
       </div>
       <div class="controls-row">
+        <button class="search-toggle-btn" id="searchToggleBtn" aria-label="검색">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        </button>
         <select class="sort-select" id="sortSelect" aria-label="정렬 기준">
           <option value="recent">최근 순</option>
           <option value="name">이름순</option>
@@ -1390,6 +1413,23 @@
     resetSearch();
     renderAll();
     searchInput.focus();
+  });
+
+  // phones only (see .search-toggle-btn CSS): search collapses into this
+  // button, dropping the input down as an overlay instead of always
+  // spending a full row on it
+  const searchRow = document.querySelector(".search-row");
+  const searchToggleBtn = $("searchToggleBtn");
+  searchToggleBtn.addEventListener("click", ()=>{
+    const isOpen = searchRow.classList.toggle("open");
+    searchToggleBtn.classList.toggle("active", isOpen);
+    if(isOpen) searchInput.focus();
+  });
+  document.addEventListener("click", (e)=>{
+    if(!searchRow.classList.contains("open")) return;
+    if(e.target.closest(".lib-search-bar")) return;
+    searchRow.classList.remove("open");
+    searchToggleBtn.classList.remove("active");
   });
 
   const sortSelect = $("sortSelect");
@@ -2402,7 +2442,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "27";
+  const SW_VERSION = "28";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
