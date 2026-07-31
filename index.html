@@ -198,6 +198,22 @@
   .file-grid.compact .file-card .name{font-size:13.5px;}
   .file-grid.compact .file-card .meta{margin-top:2px;}
   .file-grid.compact .file-card .progress-bar{margin-top:6px; height:3px;}
+  /* below the desktop breakpoint (960px+) that turns "compact" into an
+     actual multi-column grid, the two density modes only differed by a
+     few px of padding — barely visible. Give compact a genuinely
+     different shape here too: a flat divided list instead of bordered
+     cards, so switching modes reads as a real change on phones/tablets. */
+  @media (max-width:959px){
+    .file-grid.compact{gap:0;}
+    .file-grid.compact .file-card{
+      border-radius:0; border:none; border-bottom:1px solid var(--line);
+      box-shadow:none; padding:10px 4px;
+    }
+    .file-grid.compact .file-card:last-child{border-bottom:none;}
+  }
+  @media (max-width:959px) and (hover:hover) and (pointer:fine){
+    .file-grid.compact .file-card:hover{transform:none; box-shadow:none;}
+  }
 
   .lib-body{flex:1; display:flex; flex-direction:column; min-height:0; position:relative;}
 
@@ -2442,7 +2458,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "28";
+  const SW_VERSION = "29";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
