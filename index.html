@@ -572,6 +572,12 @@
   .editor-title-input:focus{outline:none; background:var(--bg-sunken);}
   .editor-title-input::placeholder{color:var(--text-400); font-weight:500;}
   .editor-body{flex:1; min-height:0; display:flex; position:relative;}
+  .editor-body.drag-over::after{
+    content:"이미지를 여기에 놓으면 첨부됩니다"; position:absolute; inset:8px; z-index:10;
+    display:flex; align-items:center; justify-content:center; text-align:center; padding:20px;
+    border:2px dashed var(--accent-400); border-radius:var(--r-lg); background:rgba(212,133,74,0.08);
+    color:var(--accent-500); font-size:14px; font-weight:600; pointer-events:none;
+  }
   .editor-textarea{
     flex:1; width:100%; height:100%; border:none; resize:none; background:var(--bg-app); color:var(--text-900);
     padding:24px; font-family:'SFMono-Regular',Consolas,monospace; font-size:14px; line-height:1.7;
@@ -1991,10 +1997,9 @@
     textarea.selectionStart = textarea.selectionEnd = start + text.length;
     textarea.focus();
   }
-  $("editorImageBtn").addEventListener("click", ()=> $("editorImageInput").click());
-  $("editorImageInput").addEventListener("change", async (e)=>{
-    const imgFiles = Array.from(e.target.files).filter(f=> IMAGE_EXT_RE.test(f.name));
-    e.target.value = "";
+  // shared by the 이미지 button, dropping image files onto the editor, and
+  // pasting an image (e.g. a screenshot) straight from the clipboard
+  async function attachEditorImages(imgFiles){
     if(!imgFiles.length) return;
     const inserts = [];
     for(const imf of imgFiles){
@@ -2008,6 +2013,43 @@
       insertAtCursor(editorTextarea, (needsLeadingBreak ? "\n" : "") + inserts.join("\n") + "\n");
       scheduleEditorPreviewRefresh();
     }
+  }
+  $("editorImageBtn").addEventListener("click", ()=> $("editorImageInput").click());
+  $("editorImageInput").addEventListener("change", (e)=>{
+    const imgFiles = Array.from(e.target.files).filter(f=> IMAGE_EXT_RE.test(f.name));
+    e.target.value = "";
+    attachEditorImages(imgFiles);
+  });
+  const editorBody = document.querySelector(".editor-body");
+  editorBody.addEventListener("dragover", (e)=>{
+    if(!isOsFileDrag(e)) return;
+    e.preventDefault();
+    editorBody.classList.add("drag-over");
+  });
+  editorBody.addEventListener("dragleave", (e)=>{
+    if(e.target===editorBody || !editorBody.contains(e.relatedTarget)) editorBody.classList.remove("drag-over");
+  });
+  editorBody.addEventListener("drop", (e)=>{
+    if(!isOsFileDrag(e)) return;
+    e.preventDefault();
+    editorBody.classList.remove("drag-over");
+    const imgFiles = Array.from(e.dataTransfer.files || []).filter(f=> IMAGE_EXT_RE.test(f.name));
+    attachEditorImages(imgFiles);
+  });
+  // pasting an image (e.g. a screenshot copied to the clipboard) attaches
+  // it the same way — browsers give pasted images a blank/generic name, so
+  // synthesize one instead of relying on file.name
+  editorTextarea.addEventListener("paste", (e)=>{
+    const items = Array.from(e.clipboardData && e.clipboardData.items || []);
+    const imgItems = items.filter(it=> it.kind==="file" && it.type.startsWith("image/"));
+    if(!imgItems.length) return; // let normal text paste proceed
+    e.preventDefault();
+    const imgFiles = imgItems.map((it,i)=>{
+      const blob = it.getAsFile();
+      const ext = (it.type.split("/")[1] || "png").replace("jpeg","jpg");
+      return new File([blob], "pasted-image-"+Date.now()+(i?"-"+i:"")+"."+ext, {type: it.type});
+    });
+    attachEditorImages(imgFiles);
   });
   function applyEditorPreviewState(){
     if(isEditorSplitView()){
@@ -2199,9 +2241,10 @@
   // too, which was incorrectly popping up the "drop files to upload"
   // overlay during an ordinary reorganize drag.
   function isOsFileDrag(e){ return !!(e.dataTransfer && Array.from(e.dataTransfer.types||[]).includes("Files")); }
+  function editorScreenVisible(){ return !editorScreen.classList.contains("hidden"); }
   ["dragenter","dragover"].forEach(ev=>{
     document.addEventListener(ev, (e)=>{
-      if(readerScreenVisible() || !isOsFileDrag(e)) return;
+      if(readerScreenVisible() || editorScreenVisible() || !isOsFileDrag(e)) return;
       e.preventDefault();
       if(ev==="dragenter"){ dragCounter++; dragOverlay.classList.add("show"); }
     });
@@ -2214,7 +2257,7 @@
     });
   });
   document.addEventListener("drop", (e)=>{
-    if(readerScreenVisible() || !isOsFileDrag(e)) return;
+    if(readerScreenVisible() || editorScreenVisible() || !isOsFileDrag(e)) return;
     e.preventDefault();
     dragCounter = 0;
     dragOverlay.classList.remove("show");
@@ -3005,7 +3048,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "34";
+  const SW_VERSION = "35";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
