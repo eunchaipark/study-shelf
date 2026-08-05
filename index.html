@@ -2714,6 +2714,9 @@
   let inkActiveStylusId = null;   // palm rejection: pointerId of the stylus currently down
   let inkLastPenActivityTs = 0;   // palm rejection: ignore touch shortly after/around pen use
   let inkRedoStack = [];          // per-chapter; a fresh stroke clears it, like any undo/redo stack
+  let inkTouchPointers = new Map(); // touch pointerId -> last clientY, for two-finger-scroll detection
+  let inkMultiTouchActive = false;  // sticky until every finger lifts, so 2->1 finger mid-gesture doesn't suddenly draw
+  let inkPanLastCentroidY = null;
 
   function inkKey(){ return activeFile ? "ink:"+activeFile.id+":"+chapterIdx : null; }
 
@@ -2838,9 +2841,10 @@
     return [ (e.clientX-rect.left)/w, (e.clientY-rect.top)/h ];
   }
 
-  function strokeWidthFor(e){
-    if(inkTool==="eraser") return inkSize*2.4;
-    if(inkTool==="highlighter") return inkSize*3.2;
+  function strokeWidthFor(e, toolOverride){
+    const tool = toolOverride || inkTool;
+    if(tool==="eraser") return inkSize*2.4;
+    if(tool==="highlighter") return inkSize*3.2;
     const pressure = e.pressure && e.pressure>0 ? e.pressure : 0.5;
     return inkSize*(0.6+pressure*0.8);
   }
@@ -2877,7 +2881,7 @@
     }
     return inkCursorEl;
   }
-  function updateInkCursor(e, width){
+  function updateInkCursor(e, width, toolOverride){
     if(e.pointerType === "touch"){ hideInkCursor(); return; }
     const el = ensureInkCursor();
     const w = Math.max(6, width);
@@ -2886,11 +2890,12 @@
     el.style.height = w+"px";
     el.style.left = e.clientX+"px";
     el.style.top = e.clientY+"px";
-    if(inkTool==="eraser"){
+    const tool = toolOverride || inkTool;
+    if(tool==="eraser"){
       el.style.borderRadius = "50%";
       el.style.border = "1.5px solid rgba(63,58,52,.55)";
       el.style.background = "rgba(63,58,52,.08)";
-    } else if(inkTool==="highlighter"){
+    } else if(tool==="highlighter"){
       el.style.borderRadius = "3px";
       el.style.border = "1px solid rgba(63,58,52,.35)";
       el.style.background = inkColor;
@@ -2904,27 +2909,67 @@
   }
   function hideInkCursor(){ if(inkCursorEl) inkCursorEl.style.display = "none"; }
 
+  function inkTouchCentroidY(){
+    let sum=0, n=0;
+    inkTouchPointers.forEach(y=>{ sum+=y; n++; });
+    return n ? sum/n : null;
+  }
+  // A second finger landing mid-gesture means "scroll", not "draw" — abort
+  // whatever single-finger mark had already started (the brief gap before
+  // the second finger arrives can leave a stray dot/short line otherwise)
+  // and stay in scroll mode until every finger lifts, so 2->1 finger while
+  // panning doesn't suddenly resume drawing.
+  function endInkTouch(pointerId){
+    inkTouchPointers.delete(pointerId);
+    if(inkTouchPointers.size===0){ inkMultiTouchActive = false; inkPanLastCentroidY = null; }
+    else if(inkMultiTouchActive){ inkPanLastCentroidY = inkTouchCentroidY(); } // avoid a jump when the touch count changes
+  }
   function wireInkPointerEvents(){
     inkCanvas.addEventListener("pointerdown", (e)=>{
       if(!penMode) return;
-      // Palm rejection: while (or just after) a stylus is in contact, ignore
-      // touch input entirely so a resting palm doesn't leave stray marks.
       if(e.pointerType==="touch"){
+        inkTouchPointers.set(e.pointerId, e.clientY);
+        if(inkTouchPointers.size>=2) inkMultiTouchActive = true;
+        if(inkMultiTouchActive){
+          if(inkDrawing){ inkDrawing = null; inkActivePointerId = null; redrawInk(); }
+          inkPanLastCentroidY = inkTouchCentroidY();
+          return;
+        }
+        // Palm rejection: while (or just after) a stylus is in contact,
+        // ignore touch input entirely so a resting palm doesn't leave stray marks.
         const recentPen = Date.now()-inkLastPenActivityTs < 700;
         if(inkActiveStylusId!==null || recentPen) return;
       }
       if(e.pointerType==="pen"){ inkActiveStylusId = e.pointerId; inkLastPenActivityTs = Date.now(); }
       e.preventDefault();
+      // Stylus side/barrel button (buttons bit 2) switches to eraser for the
+      // duration of this stroke — Samsung S Pen and most active styluses
+      // report it this way via Pointer Events. (Apple Pencil has no barrel
+      // button — its double-tap gesture isn't exposed to web pages at all,
+      // so there's no equivalent hook for it here.)
+      const barrelHeld = e.pointerType==="pen" && !!(e.buttons & 2);
+      const tool = barrelHeld ? "eraser" : inkTool;
       inkActivePointerId = e.pointerId;
       try{ inkCanvas.setPointerCapture(e.pointerId); }catch(err){}
-      const width = strokeWidthFor(e);
-      updateInkCursor(e, width);
-      inkDrawing = { tool:inkTool, color:inkColor, width, points:[pointerToNorm(e)] };
+      const width = strokeWidthFor(e, tool);
+      updateInkCursor(e, width, tool);
+      inkDrawing = { tool, color:inkColor, width, points:[pointerToNorm(e)] };
     });
     inkCanvas.addEventListener("pointermove", (e)=>{
       if(!penMode) return;
+      if(e.pointerType==="touch" && inkTouchPointers.has(e.pointerId)){
+        inkTouchPointers.set(e.pointerId, e.clientY);
+        if(inkMultiTouchActive){
+          e.preventDefault();
+          const centroidY = inkTouchCentroidY();
+          if(inkPanLastCentroidY!==null) readScroll.scrollTop -= (centroidY - inkPanLastCentroidY);
+          inkPanLastCentroidY = centroidY;
+          return;
+        }
+      }
       if(e.pointerType==="pen") inkLastPenActivityTs = Date.now();
-      updateInkCursor(e, strokeWidthFor(e));
+      const tool = inkDrawing ? inkDrawing.tool : (e.pointerType==="pen" && (e.buttons & 2) ? "eraser" : inkTool);
+      updateInkCursor(e, strokeWidthFor(e, tool), tool);
       if(!inkDrawing || e.pointerId !== inkActivePointerId) return;
       e.preventDefault();
       const w = readInner.clientWidth, h = readInner.scrollHeight;
@@ -2941,6 +2986,7 @@
       ctx.restore();
     });
     const endStroke = (e)=>{
+      if(e && e.pointerType==="touch") endInkTouch(e.pointerId);
       if(e && e.pointerType==="pen" && e.pointerId===inkActiveStylusId) inkActiveStylusId = null;
       if(!inkDrawing || (e && e.pointerId!==undefined && e.pointerId!==inkActivePointerId)) return;
       if(inkDrawing.points.length>1){
@@ -2958,6 +3004,7 @@
     inkCanvas.addEventListener("pointerup", endStroke);
     inkCanvas.addEventListener("pointercancel", endStroke);
     inkCanvas.addEventListener("pointerleave", (e)=>{
+      if(e.pointerType==="touch") endInkTouch(e.pointerId);
       if(e.pointerId===inkActivePointerId) endStroke(e);
       hideInkCursor();
     });
@@ -3048,7 +3095,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "35";
+  const SW_VERSION = "36";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
