@@ -2953,6 +2953,17 @@
     }
     box.textContent = inkDebugLines.join("\n");
   }
+  // Stylus side/barrel button switches to eraser while held — Samsung S Pen
+  // and most active styluses report this via Pointer Events, but which bit
+  // isn't fully consistent across Android/Samsung builds: the W3C
+  // convention is buttons bit 2 ("secondary button"), but some
+  // implementations instead set bit 32 (the "eraser" bit, normally meant
+  // for physically flipping a Wacom-style pen to its eraser end) for a
+  // barrel-button press since that's semantically what it's requesting.
+  // Checking both costs nothing and covers either convention. (Apple
+  // Pencil has no barrel button — its double-tap isn't exposed to web
+  // pages at all, only to native code via UIPencilInteraction.)
+  function isBarrelHeld(e){ return e.pointerType==="pen" && !!(e.buttons & (2|32)); }
   function wireInkPointerEvents(){
     inkCanvas.addEventListener("pointerdown", (e)=>{
       if(!penMode) return;
@@ -2971,12 +2982,7 @@
       }
       if(e.pointerType==="pen"){ inkActiveStylusId = e.pointerId; inkLastPenActivityTs = Date.now(); }
       e.preventDefault();
-      // Stylus side/barrel button (buttons bit 2) switches to eraser for the
-      // duration of this stroke — Samsung S Pen and most active styluses
-      // report it this way via Pointer Events. (Apple Pencil has no barrel
-      // button — its double-tap gesture isn't exposed to web pages at all,
-      // so there's no equivalent hook for it here.)
-      const barrelHeld = e.pointerType==="pen" && !!(e.buttons & 2);
+      const barrelHeld = isBarrelHeld(e);
       if(e.pointerType==="pen") inkDebugLog("pen down: button="+e.button+" buttons="+e.buttons+" barrelHeld="+barrelHeld);
       const tool = barrelHeld ? "eraser" : inkTool;
       inkActivePointerId = e.pointerId;
@@ -3009,7 +3015,19 @@
         inkLastPenActivityTs = Date.now();
         if(e.buttons !== inkLastLoggedButtons){ inkDebugLog("pen move: button="+e.button+" buttons="+e.buttons); inkLastLoggedButtons = e.buttons; }
       }
-      const tool = inkDrawing ? inkDrawing.tool : (e.pointerType==="pen" && (e.buttons & 2) ? "eraser" : inkTool);
+      // Mid-stroke button toggle: pressing/releasing the barrel button
+      // *while already drawing* (not just at the moment the tip touches
+      // down) commits what's drawn so far as one stroke and starts a fresh
+      // one with the new tool, so it isn't locked in only at stroke-start.
+      if(inkDrawing && e.pointerType==="pen" && e.pointerId===inkActivePointerId){
+        const wantTool = isBarrelHeld(e) ? "eraser" : inkTool;
+        if(wantTool !== inkDrawing.tool){
+          if(inkDrawing.points.length>1){ inkStrokes.push(inkDrawing); inkRedoStack = []; }
+          const lastPt = inkDrawing.points[inkDrawing.points.length-1];
+          inkDrawing = { tool:wantTool, color:inkColor, width:strokeWidthFor(e, wantTool), points:[lastPt] };
+        }
+      }
+      const tool = inkDrawing ? inkDrawing.tool : (isBarrelHeld(e) ? "eraser" : inkTool);
       updateInkCursor(e, strokeWidthFor(e, tool), tool);
       if(!inkDrawing || e.pointerId !== inkActivePointerId) return;
       e.preventDefault();
@@ -3053,6 +3071,10 @@
       if(e.pointerId===inkActivePointerId) endStroke(e);
       hideInkCursor();
     });
+    // Some browsers treat a stylus barrel-button press like a right-click
+    // and fire a native context menu on/after it — block that while
+    // drawing so it can't pop up and swallow the rest of the gesture.
+    inkCanvas.addEventListener("contextmenu", (e)=>{ if(penMode) e.preventDefault(); });
   }
 
   function setPenMode(on){
@@ -3140,7 +3162,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "38";
+  const SW_VERSION = "39";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
