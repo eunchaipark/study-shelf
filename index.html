@@ -2717,6 +2717,7 @@
   let inkTouchPointers = new Map(); // touch pointerId -> last clientY, for two-finger-scroll detection
   let inkMultiTouchActive = false;  // sticky until every finger lifts, so 2->1 finger mid-gesture doesn't suddenly draw
   let inkPanLastCentroidY = null;
+  let inkLastLoggedButtons = null;  // TEMPORARY, see inkDebugLog
 
   function inkKey(){ return activeFile ? "ink:"+activeFile.id+":"+chapterIdx : null; }
 
@@ -2924,6 +2925,27 @@
     if(inkTouchPointers.size===0){ inkMultiTouchActive = false; inkPanLastCentroidY = null; }
     else if(inkMultiTouchActive){ inkPanLastCentroidY = inkTouchCentroidY(); } // avoid a jump when the touch count changes
   }
+
+  // TEMPORARY diagnostic — Pointer Events' button-bit convention for a
+  // stylus barrel button is inconsistent across Android/Samsung builds (and
+  // some intercept the S Pen button for a system "Air command" gesture
+  // before it ever reaches the page), so guessing further isn't productive.
+  // This surfaces the real button/buttons values live so detection can be
+  // corrected against actual device data. Remove once that's confirmed.
+  let inkDebugLines = [];
+  function inkDebugLog(msg){
+    const line = new Date().toISOString().slice(11,19) + " " + msg;
+    inkDebugLines.push(line);
+    if(inkDebugLines.length > 10) inkDebugLines = inkDebugLines.slice(-10);
+    let box = document.getElementById("inkDebugBox");
+    if(!box){
+      box = document.createElement("div");
+      box.id = "inkDebugBox";
+      box.style.cssText = "position:fixed; bottom:8px; left:8px; right:8px; max-height:150px; overflow-y:auto; background:rgba(20,18,16,.88); color:#8f8; font-family:'SFMono-Regular',Consolas,monospace; font-size:10.5px; line-height:1.5; padding:8px 10px; border-radius:8px; z-index:99999; white-space:pre-wrap; pointer-events:none;";
+      document.body.appendChild(box);
+    }
+    box.textContent = inkDebugLines.join("\n");
+  }
   function wireInkPointerEvents(){
     inkCanvas.addEventListener("pointerdown", (e)=>{
       if(!penMode) return;
@@ -2948,6 +2970,7 @@
       // button — its double-tap gesture isn't exposed to web pages at all,
       // so there's no equivalent hook for it here.)
       const barrelHeld = e.pointerType==="pen" && !!(e.buttons & 2);
+      if(e.pointerType==="pen") inkDebugLog("pen down: button="+e.button+" buttons="+e.buttons+" barrelHeld="+barrelHeld);
       const tool = barrelHeld ? "eraser" : inkTool;
       inkActivePointerId = e.pointerId;
       try{ inkCanvas.setPointerCapture(e.pointerId); }catch(err){}
@@ -2962,12 +2985,23 @@
         if(inkMultiTouchActive){
           e.preventDefault();
           const centroidY = inkTouchCentroidY();
-          if(inkPanLastCentroidY!==null) readScroll.scrollTop -= (centroidY - inkPanLastCentroidY);
+          // .read-scroll has scroll-behavior:smooth for programmatic jumps
+          // (chapter change, TOC nav) — that also applies to plain scrollTop
+          // writes, so every one of these per-frame drag updates was
+          // launching its own catch-up animation and stomping on the last,
+          // which is exactly what read as laggy/rubber-bandy. scrollTo with
+          // behavior:"instant" bypasses it for just this real-time drag.
+          if(inkPanLastCentroidY!==null){
+            readScroll.scrollTo({ top: readScroll.scrollTop - (centroidY - inkPanLastCentroidY), behavior: "instant" });
+          }
           inkPanLastCentroidY = centroidY;
           return;
         }
       }
-      if(e.pointerType==="pen") inkLastPenActivityTs = Date.now();
+      if(e.pointerType==="pen"){
+        inkLastPenActivityTs = Date.now();
+        if(e.buttons !== inkLastLoggedButtons){ inkDebugLog("pen move: button="+e.button+" buttons="+e.buttons); inkLastLoggedButtons = e.buttons; }
+      }
       const tool = inkDrawing ? inkDrawing.tool : (e.pointerType==="pen" && (e.buttons & 2) ? "eraser" : inkTool);
       updateInkCursor(e, strokeWidthFor(e, tool), tool);
       if(!inkDrawing || e.pointerId !== inkActivePointerId) return;
@@ -2987,6 +3021,10 @@
     });
     const endStroke = (e)=>{
       if(e && e.pointerType==="touch") endInkTouch(e.pointerId);
+      if(e && e.pointerType==="pen"){
+        inkDebugLog("pen up ("+e.type+"): button="+e.button+" buttons="+e.buttons+" committedTool="+(inkDrawing&&inkDrawing.tool));
+        inkLastLoggedButtons = null;
+      }
       if(e && e.pointerType==="pen" && e.pointerId===inkActiveStylusId) inkActiveStylusId = null;
       if(!inkDrawing || (e && e.pointerId!==undefined && e.pointerId!==inkActivePointerId)) return;
       if(inkDrawing.points.length>1){
@@ -3095,7 +3133,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "36";
+  const SW_VERSION = "37";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
