@@ -78,7 +78,7 @@
     --shadow-lg:0 20px 50px rgba(63,58,52,.18);
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
-  html,body{height:100%;}
+  html,body{height:100%; overscroll-behavior:none;}
   body{
     margin:0; font-family:var(--ui-font); background:var(--bg-app); color:var(--text-700); overflow:hidden;
     -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
@@ -465,7 +465,7 @@
   .ink-canvas{position:absolute; top:0; left:0; width:100%; height:100%; touch-action:none; z-index:5;}
   .ink-canvas.inactive{pointer-events:none;}
   .ink-canvas.highlight-layer{z-index:4; pointer-events:none; mix-blend-mode:multiply;}
-  .ink-cursor{position:fixed; top:0; left:0; pointer-events:none; border-radius:50%; transform:translate(-50%,-50%); z-index:200; display:none; box-sizing:border-box;}
+  .ink-cursor{position:fixed; top:0; left:0; pointer-events:none; border-radius:50%; z-index:200; display:none; box-sizing:border-box;}
 
   [data-theme="light"] .read-scroll{ --read-bg:#faf9f6; --read-text:#1d1e21; }
   [data-theme="sepia"] .read-scroll{ --read-bg:#f1e6d3; --read-text:#3b3226; }
@@ -2408,7 +2408,13 @@
     chapterIdx = Math.max(0, Math.min(idx, activeChapters.length-1));
     readInner.innerHTML = activeChapters[chapterIdx].html;
     readInner.querySelectorAll("pre code").forEach(block=>{ try{ hljs.highlightElement(block); }catch(e){} });
-    if(resetScroll !== false) readScroll.scrollTop = 0;
+    // .read-scroll has scroll-behavior:smooth (for deliberate jumps like
+    // this one, in principle) but the content was just replaced wholesale —
+    // "smoothly" animating from wherever the old chapter had scrolled to
+    // down through the brand-new chapter's content read as the page
+    // lurching backwards on every chapter change. Instant here; smooth is
+    // still what TOC/other explicit scrollIntoView-style jumps get.
+    if(resetScroll !== false) readScroll.scrollTo({ top: 0, behavior: "instant" });
     chapterIndicator.textContent = (chapterIdx+1) + " / " + activeChapters.length;
     $("prevBtn").disabled = chapterIdx === 0;
     $("nextBtn").disabled = chapterIdx === activeChapters.length-1;
@@ -2889,8 +2895,9 @@
     el.style.display = "block";
     el.style.width = w+"px";
     el.style.height = w+"px";
-    el.style.left = e.clientX+"px";
-    el.style.top = e.clientY+"px";
+    // transform (not left/top) so this doesn't force a layout recalc on
+    // every single pointermove while the canvas is also busy redrawing
+    el.style.transform = "translate("+e.clientX+"px,"+e.clientY+"px) translate(-50%,-50%)";
     const tool = toolOverride || inkTool;
     if(tool==="eraser"){
       el.style.borderRadius = "50%";
@@ -3133,7 +3140,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "37";
+  const SW_VERSION = "38";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
