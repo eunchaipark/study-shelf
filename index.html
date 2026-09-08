@@ -560,6 +560,7 @@
   .font-row{display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;}
   .font-row button{width:34px; height:34px; border-radius:var(--r-sm); border:1px solid var(--line-strong); background:var(--bg-sunken); color:var(--text-700); font-size:16px; font-weight:700; transition:background-color .15s var(--ease);}
   .font-row button:active{background:var(--bg-sunken-2);}
+  .font-row button:disabled{opacity:.3; cursor:default;}
   @media (hover:hover) and (pointer:fine){ .font-row button:hover{background:var(--bg-sunken-2); border-color:var(--text-400);} }
   .font-row .val{font-size:13px; color:var(--text-900); font-variant-numeric:tabular-nums; font-weight:600;}
   .theme-row{display:flex; gap:6px;}
@@ -3177,10 +3178,13 @@
     settingsPop.classList.contains("show") ? closeSettings() : openSettings();
   });
 
+  const READ_SIZE_MIN = 10, READ_SIZE_MAX = 26;
   function applyFont(){
-    fontSize = Math.max(14, Math.min(26, fontSize));
+    fontSize = Math.max(READ_SIZE_MIN, Math.min(READ_SIZE_MAX, fontSize));
     document.documentElement.style.setProperty("--read-size", fontSize+"px");
     fontVal.textContent = fontSize+"px";
+    $("fontMinus").disabled = fontSize <= READ_SIZE_MIN;
+    $("fontPlus").disabled = fontSize >= READ_SIZE_MAX;
     resizeInkCanvas();
   }
   $("fontMinus").addEventListener("click", ()=>{ fontSize -= 1; applyFont(); saveProgress(); });
