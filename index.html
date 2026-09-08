@@ -110,7 +110,7 @@
     border-bottom:1px solid var(--line);
     flex:0 0 auto; background:var(--surface);
   }
-  .lib-brand{font-family:var(--ui-font); font-weight:800; font-size:14px; letter-spacing:.05em; color:var(--accent-500); text-transform:uppercase; line-height:1.15; white-space:nowrap; flex:0 0 auto;}
+  .lib-brand{font-family:var(--ui-font); font-weight:800; font-size:14px; letter-spacing:.05em; color:var(--accent-500); text-transform:uppercase; line-height:1.15; white-space:nowrap; flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;}
   .lib-spacer{flex:1;}
   .btn{
     display:inline-flex; align-items:center; gap:6px; border:none; border-radius:var(--r-sm);
@@ -121,11 +121,21 @@
      secondary action collapses to icon-only rather than shrinking every
      button's padding/font, so both buttons keep the same visual weight as
      the rest of the UI instead of looking pinched */
-  @media (max-width:400px){
+  @media (max-width:719px){
     .lib-topbar{gap:8px;}
-    .lib-brand{font-size:12px; letter-spacing:.03em;}
     .btn-ghost{padding:10px; gap:0;}
     .btn-ghost .btn-label{display:none;}
+  }
+  /* At the narrowest common width (360px) the row still cannot seat the
+     wordmark alongside three actions and the account button, and a
+     truncated "STUDY ..." reads worse than none — the app names itself on
+     its launcher icon and tab anyway. The ellipsis above stays as the
+     backstop for whatever a substituted font does in between. */
+  @media (max-width:520px){
+    .lib-brand{font-size:12px; letter-spacing:.03em;}
+  }
+  @media (max-width:400px){
+    .lib-brand{display:none;}
   }
   .btn-primary{background:var(--accent-400); color:#fffaf6; box-shadow:var(--shadow-sm);}
   .btn-primary:active{background:var(--accent-500); transform:translateY(1px); box-shadow:none;}
@@ -241,8 +251,11 @@
   .account-sync-dot.synced{background:#67a782;}
   .account-sync-dot.syncing{background:var(--accent-400); animation:sync-pulse 1s ease-in-out infinite;}
   .account-sync-dot.error{background:var(--danger);}
+  .account-sync-dot.offline{background:var(--text-400);}
   @keyframes sync-pulse{0%,100%{opacity:1;} 50%{opacity:.35;}}
-  .menu-account-id{font-size:11.5px; color:var(--text-500); padding:6px 10px 8px; border-bottom:1px solid var(--line); margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px;}
+  .menu-account-id{font-size:11.5px; color:var(--text-500); padding:6px 10px 2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .menu-sync-line{font-size:11px; color:var(--text-400); padding:0 10px 8px; border-bottom:1px solid var(--line); margin-bottom:2px; line-height:1.4;}
+  .menu-sync-line.error{color:var(--danger);}
   .rail-row{display:flex; gap:8px; overflow-x:auto; overflow-y:hidden; white-space:nowrap; -webkit-overflow-scrolling:touch;}
   .rail-crumbs{display:flex; align-items:center; gap:3px; overflow-x:auto; white-space:nowrap; -webkit-overflow-scrolling:touch;}
   .crumb-item{background:none; border:none; padding:3px 3px; font-size:12px; font-weight:600; color:var(--text-500); border-radius:6px; flex:0 0 auto; transition:color .15s var(--ease);}
@@ -349,11 +362,32 @@
   #fileInput{display:none;}
 
   /* ============ Popovers / Modals (shared) ============ */
+  #toastHost{position:fixed; left:0; right:0; bottom:0; z-index:60; display:flex; justify-content:center; padding:0 12px calc(14px + env(safe-area-inset-bottom)); pointer-events:none;}
+  .toast{
+    display:flex; align-items:center; gap:10px; max-width:min(520px, 100%);
+    background:var(--text-900); color:#fbf8f4; border-radius:var(--r-md);
+    padding:10px 10px 10px 14px; box-shadow:var(--shadow-lg); font-size:13px; line-height:1.4;
+    pointer-events:auto; transform:translateY(12px); opacity:0;
+    transition:opacity .2s var(--ease), transform .2s var(--ease);
+  }
+  .toast.show{transform:none; opacity:1;}
+  .toast-msg{flex:1; min-width:0;}
+  .toast-action{
+    flex:0 0 auto; background:transparent; border:none; color:var(--accent-300);
+    font-family:inherit; font-size:13px; font-weight:700; padding:4px 6px; border-radius:6px;
+  }
+  .toast-action:active{background:rgba(255,255,255,.12);}
+  .toast-close{
+    flex:0 0 auto; background:transparent; border:none; color:rgba(251,248,244,.6);
+    padding:4px; border-radius:6px; display:flex;
+  }
+  .toast-close .icon{width:15px; height:15px;}
+
   .overlay{position:absolute; inset:0; background:rgba(63,58,52,0.28); backdrop-filter:blur(2px); z-index:50; opacity:0; pointer-events:none; transition:opacity .15s var(--ease);}
   .overlay.show{opacity:1; pointer-events:auto;}
 
   .menu-pop{
-    position:absolute; z-index:51; min-width:180px;
+    position:fixed; z-index:51; min-width:180px; max-width:calc(100vw - 16px); max-height:calc(100vh - 16px); overflow-y:auto;
     background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md); padding:6px;
     box-shadow:var(--shadow-lg);
   }
@@ -876,6 +910,7 @@
   <!-- ============ shared overlay / modal layer ============ -->
   <div class="overlay" id="overlay"></div>
   <div id="modalLayer"></div>
+  <div id="toastHost"></div>
 
 </div>
 
@@ -967,8 +1002,8 @@
     folders = await S.getJSON("app:folders", []);
     files = await S.getJSON("app:files", []);
   }
-  async function persistFolders(){ await S.setJSON("app:folders", folders); scheduleSync(); }
-  async function persistFiles(){ await S.setJSON("app:files", files); scheduleSync(); }
+  async function persistFolders(){ bumpLibraryRev(); await S.setJSON("app:folders", folders); scheduleSync(); }
+  async function persistFiles(){ bumpLibraryRev(); await S.setJSON("app:files", files); scheduleSync(); }
 
   async function loadPrefs(){
     const prefs = await S.getJSON("app:prefs", {});
@@ -989,14 +1024,25 @@
      if Firebase fails to load (offline, blocked, etc.) the app just runs in
      local-only mode, same as before this feature existed. Firestore layout,
      all scoped under users/{uid}/:
-       library/main    -> { folders, files, updatedAt }
-       library/deleted -> { ids: { [fileId]: deletedAtMs } }  (tombstones)
+       library/main     -> { folders, files, updatedAt }
+       library/deleted  -> { ids: {fileId: {ts}}, folders: {folderId: {ts}} }
        prefs/main       -> { sortMode, density, customBg, customText, updatedTs }
-       content/{fileId} -> { text, updatedAt }
-       ink/{fileId}_{chapterIdx} -> { strokes, updatedAt }
-     Merge rule for files/folders: union by id, higher updatedTs wins;
-     tombstones in library/deleted suppress resurrection of files deleted on
-     another device. */
+       content/{fileId} -> chunked string: the markdown body
+       assets/{fileId}  -> chunked string: JSON map of filename -> data URL
+       ink/{fileId}_{chapterIdx} -> chunked string: JSON stroke list
+
+     Every large payload goes through writeChunked/readChunked because
+     Firestore caps one document at 1 MiB, and book text, pasted images and
+     ink strokes each exceed that on their own.
+
+     Merge rules. A file carries three independent clocks so one kind of
+     change can never roll back another:
+       updatedTs  - title/folder/progress; bumped by merely reading a book
+       contentTs  - the markdown body and its images; bumped only on save
+       inkTs[idx] - handwriting, per chapter
+     Deletions are tombstones holding the record's *own* timestamp as of the
+     deletion, so resolving one never depends on two devices' clocks
+     agreeing. */
   const firebaseConfig = {
     apiKey: "AIzaSyB6wHcqUil-hvoQAuD-XcDUFETYeP0AXwM",
     authDomain: "study-shelf-f3e2b.firebaseapp.com",
@@ -1010,11 +1056,170 @@
   let prefsUpdatedTs = 0;
   let syncDebounceTimer = null;
   let syncInFlight = false;
+  let syncQueued = false;
+  let syncRetryTimer = null;
+  let syncRetryDelay = 0;
+  let lastSyncTs = 0;
+  let syncState = "";          // "" | syncing | synced | error | offline
+  let syncErrorMsg = null;
+  let lastPublishedAt = 0;     // updatedAt of the library doc *we* last wrote
+  let unsubLibrary = null;
+  // Bumped on every local library mutation. syncNow snapshots it before its
+  // first await and re-checks after, so a file added mid-sync can't be lost
+  // to a merged snapshot that was computed before it existed.
+  let libraryRev = 0;
+  function bumpLibraryRev(){ libraryRev++; }
+  // Ids whose tombstone is still being written. A sync that read the cloud
+  // before that write landed would otherwise see the record still present
+  // there and pull the just-deleted book straight back.
+  const pendingDeletes = new Set();
+  const pendingFolderDeletes = new Set();
 
   let lastAuthError = null; // surfaced in the account rail so sign-in failures aren't silent
 
   function authDebug(msg){
     console.log("[auth]", msg);
+  }
+
+  /* ---- oversized payloads: split one string across numbered documents ----
+     The base doc holds part 0 plus the part count; parts 1..n-1 live at
+     "{id}__{n}". Tail parts are written before the base doc, so a reader
+     trusting the base doc's count never chases a part that isn't there. */
+  const CHUNK_BYTES = 700000; // well under Firestore's 1 MiB document ceiling
+  const utf8Len = (s)=> new TextEncoder().encode(s).length;
+  const lastChunkCount = new Map(); // "coll/id" -> parts written, to spot a shrink
+
+  function splitForFirestore(str){
+    const total = utf8Len(str);
+    if(total <= CHUNK_BYTES) return [str];
+    // bytes-per-char is uniform enough within a single payload to size the
+    // slices from the measured ratio; the surrogate check keeps a slice
+    // from cutting an emoji or CJK-extension pair in half.
+    const perChunk = Math.max(2, Math.floor(str.length * CHUNK_BYTES / total));
+    const parts = [];
+    let i = 0;
+    while(i < str.length){
+      let end = Math.min(str.length, i + perChunk);
+      if(end < str.length){
+        const code = str.charCodeAt(end-1);
+        if(code >= 0xD800 && code <= 0xDBFF) end--;
+      }
+      if(end <= i) end = Math.min(str.length, i + perChunk);
+      parts.push(str.slice(i, end));
+      i = end;
+    }
+    return parts;
+  }
+
+  async function writeChunked(uid, coll, id, payload, meta){
+    const { doc, setDoc, deleteDoc } = fb.fsMod;
+    const parts = splitForFirestore(payload);
+    for(let i=1;i<parts.length;i++){
+      await setDoc(doc(fb.db, "users", uid, coll, id+"__"+i), { c: parts[i] });
+    }
+    await setDoc(doc(fb.db, "users", uid, coll, id), Object.assign({ c: parts[0], chunks: parts.length }, meta||{}));
+    // A payload that shrank leaves orphaned tail parts behind. They are
+    // never read again (the base doc's count bounds the read), so this is
+    // housekeeping, not correctness — only worth spending writes on when we
+    // know the document really did have more parts before.
+    const key = coll+"/"+id;
+    const prev = lastChunkCount.get(key) || 0;
+    for(let i=parts.length;i<prev;i++){
+      try{ await deleteDoc(doc(fb.db, "users", uid, coll, id+"__"+i)); }catch(e){}
+    }
+    lastChunkCount.set(key, parts.length);
+  }
+
+  async function readChunked(uid, coll, id){
+    const { doc, getDoc } = fb.fsMod;
+    const snap = await getDoc(doc(fb.db, "users", uid, coll, id));
+    if(!snap.exists()) return null;
+    const d = snap.data();
+    // documents written before chunking existed stored the body under its
+    // own field name and were never split
+    if(typeof d.c !== "string"){
+      return { text: typeof d.text === "string" ? d.text : null, meta: d };
+    }
+    let out = d.c;
+    const n = d.chunks || 1;
+    for(let i=1;i<n;i++){
+      const s = await getDoc(doc(fb.db, "users", uid, coll, id+"__"+i));
+      if(!s.exists()) throw new Error("조각 누락: "+coll+"/"+id+"__"+i);
+      out += s.data().c;
+    }
+    lastChunkCount.set(coll+"/"+id, n);
+    return { text: out, meta: d };
+  }
+
+  async function deleteChunked(uid, coll, id){
+    const { doc, getDoc, deleteDoc } = fb.fsMod;
+    let n = 1;
+    try{
+      const s = await getDoc(doc(fb.db, "users", uid, coll, id));
+      if(!s.exists()) return;
+      n = s.data().chunks || 1;
+    }catch(e){}
+    for(let i=n-1;i>=1;i--){ try{ await deleteDoc(doc(fb.db, "users", uid, coll, id+"__"+i)); }catch(e){} }
+    await deleteDoc(doc(fb.db, "users", uid, coll, id));
+  }
+
+  /* ---- ink wire format ----
+     Firestore rejects an array nested directly inside another array, and an
+     ink stroke's point list is exactly that: [[x,y],[x,y],...]. That single
+     incompatibility used to abort the whole sync — including the library
+     document write — for anyone who had ever written a note, which is why
+     nothing synced at all. Strokes now travel as one compact JSON string
+     with coordinates flattened and rounded to 4 decimals (sub-pixel at any
+     realistic page width), which also roughly halves the payload. */
+  function encodeStrokes(strokes){
+    return JSON.stringify((strokes||[]).map(s=>{
+      const p = [];
+      for(const pt of (s.points||[])) p.push(Math.round(pt[0]*1e4)/1e4, Math.round(pt[1]*1e4)/1e4);
+      return { t:s.tool, c:s.color, w:s.width, p };
+    }));
+  }
+  function decodeStrokes(str){
+    let raw;
+    try{ raw = JSON.parse(str); }catch(e){ return []; }
+    if(!Array.isArray(raw)) return [];
+    return raw.map(s=>{
+      const pts = [];
+      const flat = s.p || [];
+      for(let i=0;i+1<flat.length;i+=2) pts.push([flat[i], flat[i+1]]);
+      return { tool:s.t, color:s.c, width:s.w, points:pts };
+    });
+  }
+
+  // Order-independent serialisation, so "did anything actually change?"
+  // compares content rather than key or array order.
+  function stableStr(v){
+    if(Array.isArray(v)) return "["+v.map(stableStr).join(",")+"]";
+    if(v && typeof v === "object"){
+      return "{"+Object.keys(v).sort().map(k=> JSON.stringify(k)+":"+stableStr(v[k])).join(",")+"}";
+    }
+    return JSON.stringify(v === undefined ? null : v);
+  }
+  const byId = (a,b)=> String(a.id).localeCompare(String(b.id));
+  function librarySig(folders, files){
+    return stableStr({ folders: folders.slice().sort(byId), files: files.slice().sort(byId) });
+  }
+
+  /* ---- per-resource clocks, with fallbacks for pre-split records ---- */
+  function fileContentTs(f){ return (f && (f.contentTs || f.updatedTs)) || 0; }
+  function inkTsMap(f){
+    if(f && f.inkTs && typeof f.inkTs === "object") return f.inkTs;
+    const m = {};
+    for(const idx of ((f && f.inkChapters) || [])) m[idx] = (f && f.updatedTs) || 0;
+    return m;
+  }
+  // A tombstone stores the record's own timestamp as of the deletion, so
+  // "has this been edited since it was deleted?" compares two readings of
+  // one record's clock rather than two devices' wall clocks. Legacy
+  // tombstones held a bare Date.now(), which this still reads correctly.
+  function tombstoned(tomb, recTs){
+    if(tomb == null) return false;
+    const ts = typeof tomb === "number" ? tomb : (tomb.ts || 0);
+    return (recTs || 0) <= ts;
   }
 
   // Firebase's own auth state takes a moment to load/restore on every fresh
@@ -1062,7 +1267,8 @@
           authResolved = true;
           cacheAuthUser(user);
           renderAccount();
-          if(user) syncNow();
+          if(user){ watchCloud(user.uid); syncNow(); }
+          else stopWatchingCloud();
         });
         return fb;
       }catch(e){
@@ -1141,20 +1347,48 @@
   async function signInWithGoogle(){
     authDebug("로그인 버튼 클릭");
     if(!gisTokenClient) await prepareGis();
-    if(!gisTokenClient){ alert("로그인 기능을 불러오지 못했어요. 인터넷 연결을 확인해주세요."); return; }
+    if(!gisTokenClient){ toast("로그인 기능을 불러오지 못했어요. 연결을 확인해주세요."); return; }
     gisTokenClient.requestAccessToken();
   }
   async function signOutOfCloud(){
     if(!fb) return;
+    stopWatchingCloud();
     await fb.authMod.signOut(fb.auth);
+    lastSyncTs = 0;
+    setSyncStatus("");
   }
 
-  function setSyncStatus(state){
-    const label = state==="syncing" ? "동기화 중" : state==="error" ? "동기화 실패" : state==="synced" ? "동기화됨" : "";
+  /* ---- status reporting ------------------------------------------------
+     A failing sync used to show up only as a 10px dot's tooltip, which on a
+     phone is unreachable — so "it just isn't syncing" was invisible. The
+     account menu now states the real status in words and offers a retry. */
+  function relTime(ts){
+    if(!ts) return "";
+    const diff = Date.now() - ts;
+    if(diff < 45000) return "방금 전";
+    if(diff < 3600000) return Math.round(diff/60000) + "분 전";
+    if(diff < 86400000) return Math.round(diff/3600000) + "시간 전";
+    return new Date(ts).toLocaleDateString("ko-KR", {month:"numeric", day:"numeric"});
+  }
+  function syncStatusLabel(){
+    if(syncState === "offline") return "오프라인 — 연결되면 자동으로 동기화돼요";
+    if(syncState === "syncing") return "동기화 중…";
+    if(syncState === "error")   return "동기화 실패" + (syncErrorMsg ? " — " + syncErrorMsg : "");
+    if(syncState === "synced")  return lastSyncTs ? "동기화됨 · " + relTime(lastSyncTs) : "동기화됨";
+    return "연결 중…";
+  }
+  function setSyncStatus(state, msg){
+    syncState = state;
+    syncErrorMsg = msg || null;
     const dotEl = document.querySelector(".account-sync-dot");
     if(dotEl){
       dotEl.className = "account-sync-dot" + (state ? " " + state : "");
-      dotEl.title = label;
+      dotEl.title = syncStatusLabel();
+    }
+    const line = $("syncStatusLine");
+    if(line){
+      line.textContent = syncStatusLabel();
+      line.className = "menu-sync-line" + (state === "error" ? " error" : "");
     }
   }
 
@@ -1179,126 +1413,304 @@
     }
     const u = confirmed ? fb.currentUser : cachedAuthUser;
     const name = u.displayName || u.email || "";
-    const statusClass = confirmed ? "synced" : "syncing";
-    const statusLabel = confirmed ? "동기화됨" : "연결 중";
+    const dotState = confirmed ? (syncState || "synced") : "syncing";
     el.innerHTML =
       '<button class="account-avatar-wrap" id="accountMenuBtn" aria-label="계정 메뉴">'+
         '<img class="account-avatar" src="'+escapeHtml(u.photoURL||"")+'" alt="">'+
-        '<span class="account-sync-dot '+statusClass+'" title="'+statusLabel+'"></span>'+
+        '<span class="account-sync-dot '+dotState+'" title="'+escapeHtml(syncStatusLabel())+'"></span>'+
       '</button>';
     $("accountMenuBtn").addEventListener("click", (e)=>{
+      const anchor = e.currentTarget;
       e.stopPropagation();
       closeAllOverlays();
       $("overlay").classList.add("show");
-      const rect = e.currentTarget.getBoundingClientRect();
       const menu = document.createElement("div");
       menu.className = "menu-pop";
-      menu.style.top = (rect.bottom + 6) + "px";
-      menu.style.right = (window.innerWidth - rect.right) + "px";
       menu.innerHTML =
         '<div class="menu-account-id">'+escapeHtml(name)+'</div>'+
+        '<div class="menu-sync-line'+(syncState==="error"?" error":"")+'" id="syncStatusLine">'+escapeHtml(syncStatusLabel())+'</div>'+
+        '<button class="menu-item" id="syncNowBtn">'+
+          '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v5h-5"/></svg>지금 동기화</button>'+
+        '<div class="menu-divider"></div>'+
         '<button class="menu-item danger" id="signOutBtn">로그아웃</button>';
       document.body.appendChild(menu);
+      placeMenu(menu, anchor);
+      $("syncNowBtn").addEventListener("click", ()=>{
+        syncRetryDelay = 0;
+        if(!navigator.onLine){ setSyncStatus("offline"); return; }
+        syncNow();
+      });
       $("signOutBtn").addEventListener("click", async ()=>{ closeAllOverlays(); await signOutOfCloud(); });
     });
   }
 
-  function scheduleSync(){
+  /* ---- scheduling ------------------------------------------------------ */
+  // Local edits settle briefly before being pushed, so a burst of typing or
+  // a multi-file drop becomes one sync rather than a dozen.
+  function scheduleSync(delay){
     if(!fb || !fb.currentUser) return;
     clearTimeout(syncDebounceTimer);
-    syncDebounceTimer = setTimeout(syncNow, 4000);
+    syncDebounceTimer = setTimeout(syncNow, delay || 1500);
+  }
+  function scheduleRetry(){
+    clearTimeout(syncRetryTimer);
+    syncRetryDelay = Math.min(syncRetryDelay ? syncRetryDelay * 2 : 5000, 300000);
+    syncRetryTimer = setTimeout(syncNow, syncRetryDelay);
   }
 
-  async function pushFileToCloud(uid, f){
-    const { doc, setDoc } = fb.fsMod;
-    const text = await S.getText("file-content:"+f.id);
-    if(text != null) await setDoc(doc(fb.db, "users", uid, "content", f.id), { text, updatedAt: f.updatedTs });
-    for(const idx of (f.inkChapters||[])){
-      const strokes = await S.getJSON("ink:"+f.id+":"+idx, []);
-      await setDoc(doc(fb.db, "users", uid, "ink", f.id+"_"+idx), { strokes, updatedAt: f.updatedTs });
-    }
-  }
-  async function pullFileFromCloud(uid, f){
-    const { doc, getDoc } = fb.fsMod;
-    const snap = await getDoc(doc(fb.db, "users", uid, "content", f.id));
-    if(snap.exists()) await S.setText("file-content:"+f.id, snap.data().text);
-    for(const idx of (f.inkChapters||[])){
-      const inkSnap = await getDoc(doc(fb.db, "users", uid, "ink", f.id+"_"+idx));
-      if(inkSnap.exists()) await S.setJSON("ink:"+f.id+":"+idx, inkSnap.data().strokes);
-    }
-  }
-  async function deleteFileFromCloud(uid, f){
-    const { doc, deleteDoc, getDoc, setDoc } = fb.fsMod;
+  // Live listener on the library document: an upload or edit on another
+  // device lands here in about a second instead of waiting out the
+  // five-minute poll. Our own writes echo back through the same callback,
+  // hence both the pending-writes check and the updatedAt guard.
+  function watchCloud(uid){
+    stopWatchingCloud();
     try{
-      await deleteDoc(doc(fb.db, "users", uid, "content", f.id));
-      for(const idx of (f.inkChapters||[])) await deleteDoc(doc(fb.db, "users", uid, "ink", f.id+"_"+idx));
+      const { doc, onSnapshot } = fb.fsMod;
+      unsubLibrary = onSnapshot(doc(fb.db, "users", uid, "library", "main"), (snap)=>{
+        if(snap.metadata.hasPendingWrites) return;
+        const at = (snap.data() || {}).updatedAt || 0;
+        if(at && at === lastPublishedAt) return;
+        scheduleSync(400);
+      }, (e)=> authDebug("실시간 구독 오류: "+e));
+    }catch(e){ authDebug("실시간 구독 실패: "+e); }
+  }
+  function stopWatchingCloud(){
+    if(unsubLibrary){ try{ unsubLibrary(); }catch(e){} unsubLibrary = null; }
+  }
+
+  /* ---- per-file payload transfer -------------------------------------- */
+  async function pushContentToCloud(uid, f){
+    const text = await S.getText("file-content:"+f.id);
+    if(text != null) await writeChunked(uid, "content", f.id, text, { updatedAt: fileContentTs(f) });
+    // images live in their own IndexedDB entry and used to be left out of
+    // sync entirely, so every illustrated book arrived on the second device
+    // with its pictures broken
+    const assets = await S.getJSON("assets:"+f.id, null);
+    if(assets && Object.keys(assets).length){
+      await writeChunked(uid, "assets", f.id, JSON.stringify(assets), { updatedAt: fileContentTs(f) });
+    }
+  }
+  async function pullContentFromCloud(uid, f){
+    const got = await readChunked(uid, "content", f.id);
+    if(!got || got.text == null) throw new Error("본문 없음");
+    await S.setText("file-content:"+f.id, got.text);
+    // a file may legitimately have no images, so a missing assets doc is
+    // not a failure
+    const gotAssets = await readChunked(uid, "assets", f.id);
+    if(gotAssets && gotAssets.text != null){
+      try{ await S.setJSON("assets:"+f.id, JSON.parse(gotAssets.text)); }catch(e){}
+    }
+  }
+  async function pushInkToCloud(uid, f, idx, ts){
+    const strokes = await S.getJSON("ink:"+f.id+":"+idx, []);
+    await writeChunked(uid, "ink", f.id+"_"+idx, encodeStrokes(strokes), { updatedAt: ts });
+  }
+  async function pullInkFromCloud(uid, f, idx){
+    const got = await readChunked(uid, "ink", f.id+"_"+idx);
+    if(!got || got.text == null) throw new Error("필기 없음");
+    const strokes = decodeStrokes(got.text);
+    await S.setJSON("ink:"+f.id+":"+idx, strokes);
+    return strokes.length;
+  }
+
+  async function deleteFileFromCloud(uid, f){
+    const { doc, getDoc, setDoc } = fb.fsMod;
+    try{
+      await deleteChunked(uid, "content", f.id);
+      await deleteChunked(uid, "assets", f.id);
+      const chapters = new Set([...(f.inkChapters||[]), ...Object.keys(inkTsMap(f)).map(Number)]);
+      for(const idx of chapters) await deleteChunked(uid, "ink", f.id+"_"+idx);
       const delRef = doc(fb.db, "users", uid, "library", "deleted");
       const snap = await getDoc(delRef);
-      const ids = snap.exists() ? (snap.data().ids||{}) : {};
-      ids[f.id] = Date.now();
-      await setDoc(delRef, { ids });
+      const data = snap.exists() ? snap.data() : {};
+      const ids = data.ids || {};
+      ids[f.id] = { ts: f.updatedTs || Date.now(), at: Date.now() };
+      await setDoc(delRef, Object.assign({}, data, { ids }));
     }catch(e){ console.warn("cloud delete failed", e); }
   }
-
-  async function syncNow(){
-    if(!fb || !fb.currentUser || syncInFlight) return;
-    syncInFlight = true;
-    setSyncStatus("syncing");
+  // Folders used to merge as a plain union, so a folder deleted on one
+  // device came straight back from the other, and a rename never travelled
+  // at all. They now carry updatedTs and their own tombstones.
+  async function deleteFoldersFromCloud(uid, deleted){
+    const { doc, getDoc, setDoc } = fb.fsMod;
     try{
-      const uid = fb.currentUser.uid;
+      const delRef = doc(fb.db, "users", uid, "library", "deleted");
+      const snap = await getDoc(delRef);
+      const data = snap.exists() ? snap.data() : {};
+      const folderTombs = data.folders || {};
+      for(const fo of deleted) folderTombs[fo.id] = { ts: fo.updatedTs || Date.now(), at: Date.now() };
+      await setDoc(delRef, Object.assign({}, data, { folders: folderTombs }));
+    }catch(e){ console.warn("cloud folder delete failed", e); }
+  }
+
+  /* ---- the sync itself ------------------------------------------------- */
+  async function syncNow(){
+    if(!fb || !fb.currentUser) return;
+    if(syncInFlight){ syncQueued = true; return; }
+    if(!navigator.onLine){ setSyncStatus("offline"); return; }
+    syncInFlight = true;
+    clearTimeout(syncRetryTimer);
+    setSyncStatus("syncing");
+    const uid = fb.currentUser.uid;
+    const openFileId = activeFile ? activeFile.id : null;
+    let openContentChanged = false;
+    let failures = 0;
+    try{
       const { doc, getDoc, setDoc } = fb.fsMod;
+      const revAtStart = libraryRev;
       const libRef = doc(fb.db, "users", uid, "library", "main");
-      const libSnap = await getDoc(libRef);
-      const cloud = libSnap.exists() ? libSnap.data() : { folders: [], files: [], updatedAt: 0 };
+
+      const [libSnap, delSnap] = await Promise.all([
+        getDoc(libRef),
+        getDoc(doc(fb.db, "users", uid, "library", "deleted")),
+      ]);
+      const cloud = libSnap.exists() ? libSnap.data() : {};
       const cloudFiles = cloud.files || [];
       const cloudFolders = cloud.folders || [];
+      const delData = delSnap.exists() ? delSnap.data() : {};
+      const fileTombs = delData.ids || {};
+      const folderTombs = delData.folders || {};
 
-      const delSnap = await getDoc(doc(fb.db, "users", uid, "library", "deleted"));
-      const deletedMap = delSnap.exists() ? (delSnap.data().ids||{}) : {};
-
-      // folders: union by id (no rename/delete feature yet, so no conflicts to resolve)
+      // ---- folders: newer updatedTs wins, tombstones suppress ----
       const folderMap = new Map();
-      folders.forEach(f=> folderMap.set(f.id, f));
-      cloudFolders.forEach(f=> { if(!folderMap.has(f.id)) folderMap.set(f.id, f); });
-      const mergedFolders = Array.from(folderMap.values());
+      folders.forEach(fo=> folderMap.set(fo.id, fo));
+      cloudFolders.forEach(c=>{
+        const l = folderMap.get(c.id);
+        if(!l) folderMap.set(c.id, Object.assign({}, c));
+        else if((c.updatedTs||0) > (l.updatedTs||0)) Object.assign(l, c); // in place: keeps references live
+      });
+      const mergedFolders = Array.from(folderMap.values())
+        .filter(fo=> !pendingFolderDeletes.has(fo.id) && !tombstoned(folderTombs[fo.id], fo.updatedTs||0));
 
-      // files: newer updatedTs wins per id; union of ids from both sides
+      // ---- files ----
       const localById = new Map(files.map(f=>[f.id, f]));
       const cloudById = new Map(cloudFiles.map(f=>[f.id, f]));
       const allIds = new Set([...localById.keys(), ...cloudById.keys()]);
-      const toPush = [], toPull = [];
-      let mergedFiles = [];
+
+      const pullContent = [], pushContent = [], pullInk = [], pushInk = [];
+      const cloudContentTs = {};  // id -> newest body timestamp the cloud holds
+      const cloudInkTs = {};      // id -> { chapterIdx: newest ink timestamp the cloud holds }
+      const mergedFiles = [];
+      const purged = [];
+
       for(const id of allIds){
         const l = localById.get(id), c = cloudById.get(id);
-        let winner;
-        if(l && !c){ winner = l; toPush.push(l); }
-        else if(c && !l){ winner = c; toPull.push(c); }
-        else if(l.updatedTs >= c.updatedTs){ winner = l; if(l.updatedTs > c.updatedTs) toPush.push(l); }
-        else { winner = c; toPull.push(c); }
-        mergedFiles.push(winner);
+        // read every clock off both sides *before* merging, since merging
+        // overwrites the local record's fields in place
+        const lContent = l ? fileContentTs(l) : 0;
+        const cContent = c ? fileContentTs(c) : 0;
+        const lInk = l ? inkTsMap(l) : {};
+        const cInk = c ? inkTsMap(c) : {};
+
+        // Merge into the existing local object whenever there is one, so a
+        // book open in the reader (activeFile) keeps pointing at a record
+        // that is still part of `files` — replacing the array with fresh
+        // cloud objects orphaned it, and every later progress or ink save
+        // on that orphan was silently dropped.
+        let rec;
+        if(l && c){
+          if((c.updatedTs||0) > (l.updatedTs||0)) Object.assign(l, c);
+          rec = l;
+        } else rec = l || Object.assign({}, c);
+
+        if(pendingDeletes.has(id)) continue; // local copy is already gone
+        if(tombstoned(fileTombs[id], rec.updatedTs||0)){ purged.push(rec); continue; }
+
+        // content and ink each resolve on their own clock, so reading a
+        // book on one device (which bumps updatedTs) cannot roll back an
+        // unsynced edit made on another
+        rec.contentTs = lContent;
+        if(cContent > lContent) pullContent.push({ rec, ts: cContent });
+        else if(lContent > cContent) pushContent.push({ rec, ts: lContent });
+        cloudContentTs[id] = cContent;
+
+        const chapters = new Set([...Object.keys(lInk), ...Object.keys(cInk)]);
+        const localInk = {}, cloudInk = {};
+        for(const k of chapters){
+          const lt = lInk[k]||0, ct = cInk[k]||0;
+          localInk[k] = lt;
+          cloudInk[k] = ct;
+          if(ct > lt) pullInk.push({ rec, idx:+k, ts:ct });
+          else if(lt > ct) pushInk.push({ rec, idx:+k, ts:lt });
+        }
+        rec.inkTs = localInk;
+        cloudInkTs[id] = cloudInk;
+
+        mergedFiles.push(rec);
       }
 
-      // tombstones: drop files deleted (on any device) after their last edit
-      const purged = [];
-      mergedFiles = mergedFiles.filter(f=>{
-        const delAt = deletedMap[f.id];
-        if(delAt && delAt >= f.updatedTs){ purged.push(f); return false; }
-        return true;
-      });
-      for(const f of purged){
-        await S.del("file-content:"+f.id);
-        for(const idx of (f.inkChapters||[])) await S.del("ink:"+f.id+":"+idx);
-      }
-
+      // Adopted before the first await below: from here on a file created
+      // mid-sync is pushed straight into the array this sync writes back,
+      // instead of into one that is about to be replaced.
       folders = mergedFolders;
       files = mergedFiles;
+
+      for(const f of purged){
+        await S.del("file-content:"+f.id);
+        await S.del("assets:"+f.id);
+        for(const idx of Object.keys(inkTsMap(f))) await S.del("ink:"+f.id+":"+idx);
+      }
+
+      // Every transfer is isolated. One book too large for a document, or a
+      // blip on a single request, must not take the rest of the sync down
+      // with it — least of all the library write below, whose failure is
+      // what used to make the entire library invisible on other devices.
+      for(const job of pullContent){
+        try{
+          await pullContentFromCloud(uid, job.rec);
+          job.rec.contentTs = job.ts;
+          if(job.rec.id === openFileId) openContentChanged = true;
+        }catch(e){ failures++; console.warn("content pull failed", job.rec.id, e); }
+      }
+      for(const job of pushContent){
+        try{
+          await pushContentToCloud(uid, job.rec);
+          cloudContentTs[job.rec.id] = job.ts;
+        }catch(e){ failures++; console.warn("content push failed", job.rec.id, e); }
+      }
+      for(const job of pullInk){
+        try{
+          const n = await pullInkFromCloud(uid, job.rec, job.idx);
+          job.rec.inkTs[job.idx] = job.ts;
+          const set = new Set(job.rec.inkChapters || []);
+          if(n > 0) set.add(job.idx); else set.delete(job.idx);
+          job.rec.inkChapters = Array.from(set).sort((a,b)=>a-b);
+        }catch(e){ failures++; console.warn("ink pull failed", job.rec.id, job.idx, e); }
+      }
+      for(const job of pushInk){
+        try{
+          await pushInkToCloud(uid, job.rec, job.idx, job.ts);
+          if(cloudInkTs[job.rec.id]) cloudInkTs[job.rec.id][job.idx] = job.ts;
+        }catch(e){ failures++; console.warn("ink push failed", job.rec.id, job.idx, e); }
+      }
+
+      // `files` *is* mergedFiles, so anything created while the transfers
+      // ran is already in the payload — but its body has not been uploaded,
+      // so a follow-up pass is still owed.
+      if(libraryRev !== revAtStart) syncQueued = true;
+
       await S.setJSON("app:folders", folders);
       await S.setJSON("app:files", files);
 
-      for(const f of toPull) if(!purged.includes(f)) await pullFileFromCloud(uid, f);
-      for(const f of toPush) if(!purged.includes(f)) await pushFileToCloud(uid, f);
+      // The published record advertises what the *cloud* holds, which stays
+      // newer than the local copy whenever a pull failed — publishing the
+      // local timestamp there would tell every device the cloud had rolled
+      // back, and the newer body would be lost.
+      // A record that joined mid-sync has no cloud-side entry at all, so it
+      // publishes 0 and the next pass sees local > cloud and uploads it.
+      const payloadFiles = mergedFiles.map(f=> Object.assign({}, f, {
+        contentTs: cloudContentTs[f.id] || 0,
+        inkTs: cloudInkTs[f.id] || {},
+      }));
+      const payload = { folders: mergedFolders, files: payloadFiles };
 
-      await setDoc(libRef, { folders: mergedFolders, files: mergedFiles, updatedAt: Date.now() });
+      // Skip a no-op write. Besides saving quota on the periodic poll, this
+      // is what keeps the live listener from ping-ponging: two devices that
+      // already agree stop rewriting the document at each other.
+      if(librarySig(mergedFolders, payloadFiles) !== librarySig(cloudFolders, cloudFiles)){
+        lastPublishedAt = Date.now();
+        await setDoc(libRef, Object.assign({}, payload, { updatedAt: lastPublishedAt }));
+      }
 
       // prefs: last-writer-wins by timestamp
       const prefsRef = doc(fb.db, "users", uid, "prefs", "main");
@@ -1313,17 +1725,37 @@
         await S.setJSON("app:prefs", {sortMode, density, customBg, customText, updatedTs: prefsUpdatedTs});
         sortSelect.value = sortMode;
         updateDensityButtons();
-      } else {
+      } else if(!cloudPrefs || (cloudPrefs.updatedTs||0) < prefsUpdatedTs){
         await setDoc(prefsRef, {sortMode, density, customBg, customText, updatedTs: prefsUpdatedTs});
       }
 
+      // the reader holds a direct reference to its file; if the merge
+      // dropped that record entirely, send the user back to the library
+      // rather than leave a book open on a record that no longer exists
+      if(activeFile){
+        const still = files.find(x=> x.id === activeFile.id);
+        if(still) activeFile = still;
+        else if(!readerScreen.classList.contains("hidden")) $("backBtn").click();
+      }
+
       renderAll();
-      setSyncStatus("synced");
+      lastSyncTs = Date.now();
+      syncRetryDelay = 0;
+      setSyncStatus(failures ? "error" : "synced", failures ? failures+"개 항목 실패 · 곧 다시 시도해요" : null);
+      if(failures) scheduleRetry();
+
+      // don't yank the page out from under someone mid-paragraph: offer the
+      // refresh instead of forcing it
+      if(openContentChanged && !readerScreen.classList.contains("hidden")){
+        toast("이 책이 다른 기기에서 수정됐어요", "새로고침", ()=> openBook(openFileId));
+      }
     }catch(e){
       console.warn("sync failed", e);
-      setSyncStatus("error");
+      setSyncStatus("error", (e && e.message) ? String(e.message).slice(0, 60) : null);
+      scheduleRetry();
     }finally{
       syncInFlight = false;
+      if(syncQueued){ syncQueued = false; scheduleSync(600); }
     }
   }
 
@@ -1339,6 +1771,60 @@
     $("overlay").classList.remove("show");
     $("modalLayer").innerHTML = "";
     document.querySelectorAll(".menu-pop").forEach(n=>n.remove());
+  }
+
+  // Anchors a already-appended pop-up menu, clamped to the viewport on both
+  // axes. Positioning it purely from the anchor's rect put the menu partly
+  // off-screen whenever the anchor itself sat near (or past) an edge — which
+  // on a phone is exactly where the account avatar ends up.
+  const MENU_EDGE = 8;
+  function placeMenu(menu, anchor){
+    const rect = anchor.getBoundingClientRect();
+    const m = menu.getBoundingClientRect();
+    let left = rect.right - m.width;                       // right-aligned to the anchor
+    left = Math.min(left, window.innerWidth - m.width - MENU_EDGE);
+    left = Math.max(MENU_EDGE, left);
+    menu.style.left = left + "px";
+    menu.style.right = "";
+    // flip above the anchor rather than run off the bottom
+    if(rect.bottom + 6 + m.height > window.innerHeight && rect.top - 6 - m.height > 0){
+      menu.style.top = "";
+      menu.style.bottom = (window.innerHeight - rect.top + 6) + "px";
+    } else {
+      menu.style.bottom = "";
+      menu.style.top = Math.max(MENU_EDGE, Math.min(rect.bottom + 6, window.innerHeight - m.height - MENU_EDGE)) + "px";
+    }
+  }
+
+  // Brief non-blocking message, optionally with one action. Used for things
+  // the user should know about but must not be interrupted by mid-read —
+  // native alert() would steal focus and block the reader entirely.
+  let toastTimer = null;
+  function toast(msg, actionLabel, onAction){
+    const host = $("toastHost");
+    if(!host) return;
+    host.innerHTML = "";
+    const el = document.createElement("div");
+    el.className = "toast";
+    el.innerHTML = '<span class="toast-msg"></span>';
+    el.querySelector(".toast-msg").textContent = msg;
+    if(actionLabel){
+      const b = document.createElement("button");
+      b.className = "toast-action";
+      b.textContent = actionLabel;
+      b.addEventListener("click", ()=>{ host.innerHTML = ""; if(onAction) onAction(); });
+      el.appendChild(b);
+    }
+    const close = document.createElement("button");
+    close.className = "toast-close";
+    close.setAttribute("aria-label", "닫기");
+    close.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+    close.addEventListener("click", ()=>{ host.innerHTML = ""; });
+    el.appendChild(close);
+    host.appendChild(el);
+    requestAnimationFrame(()=> el.classList.add("show"));
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(()=>{ el.classList.remove("show"); setTimeout(()=>{ if(el.parentNode) el.remove(); }, 250); }, actionLabel ? 12000 : 5000);
   }
   $("overlay").addEventListener("click", closeAllOverlays);
   $("newFolderBtn").addEventListener("click", ()=> openNewFolderModal());
@@ -1378,6 +1864,7 @@
     if(!fo || folderId === newParentId) return;
     if(newParentId && descendantFolderIds(folderId).includes(newParentId)) return; // no cycles
     fo.parentId = newParentId || null;
+    fo.updatedTs = Date.now();
     persistFolders();
   }
   // shared drop handler for both the tree and the 미분류 chip — reads
@@ -1746,7 +2233,7 @@
     const confirm = ()=>{
       const name = input.value.trim();
       if(!name) return;
-      folders.push({id:genId(), name, parentId});
+      folders.push({id:genId(), name, parentId, updatedTs: Date.now()});
       persistFolders();
       if(parentId) expandedFolders.add(parentId); // reveal it in the tree immediately, not just after a manual expand
       closeAllOverlays();
@@ -1760,11 +2247,8 @@
   function openFileMenu(anchor, f){
     closeAllOverlays();
     $("overlay").classList.add("show");
-    const rect = anchor.getBoundingClientRect();
     const menu = document.createElement("div");
     menu.className = "menu-pop";
-    menu.style.top = (rect.bottom + 6) + "px";
-    menu.style.right = (window.innerWidth - rect.right) + "px";
     menu.innerHTML =
       '<button class="menu-item" data-act="edit"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>편집</button>'+
       '<button class="menu-item" data-act="rename"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>이름 변경</button>'+
@@ -1774,13 +2258,7 @@
       '<div class="menu-divider"></div>'+
       '<button class="menu-item danger" data-act="delete"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>삭제</button>';
     document.body.appendChild(menu);
-
-    // keep the menu fully on-screen, flipping above the anchor if it would overflow the bottom
-    const menuRect = menu.getBoundingClientRect();
-    if(rect.bottom + 6 + menuRect.height > window.innerHeight){
-      menu.style.top = "";
-      menu.style.bottom = (window.innerHeight - rect.top + 6) + "px";
-    }
+    placeMenu(menu, anchor);
 
     menu.querySelectorAll('[data-act="move"]').forEach(btn=>{
       btn.addEventListener("click", ()=>{
@@ -1838,14 +2316,19 @@
     $("modalLayer").appendChild(modal);
     $("cancelDelete").addEventListener("click", closeAllOverlays);
     $("confirmDelete").addEventListener("click", async ()=>{
+      pendingDeletes.add(f.id);
       files = files.filter(x=>x.id!==f.id);
+      closeAllOverlays();
+      renderAll();
       await persistFiles();
       await S.del("file-content:"+f.id);
       await S.del("assets:"+f.id);
-      for(const idx of (f.inkChapters||[])) await S.del("ink:"+f.id+":"+idx);
-      if(fb && fb.currentUser) deleteFileFromCloud(fb.currentUser.uid, f);
-      closeAllOverlays();
-      renderAll();
+      for(const idx of Object.keys(inkTsMap(f))) await S.del("ink:"+f.id+":"+idx);
+      if(fb && fb.currentUser){
+        try{ await deleteFileFromCloud(fb.currentUser.uid, f); }
+        finally{ pendingDeletes.delete(f.id); }
+        syncNow();
+      } else pendingDeletes.delete(f.id);
     });
   }
 
@@ -1853,22 +2336,14 @@
   function openFolderMenu(anchor, folder){
     closeAllOverlays();
     $("overlay").classList.add("show");
-    const rect = anchor.getBoundingClientRect();
     const menu = document.createElement("div");
     menu.className = "menu-pop";
-    menu.style.top = (rect.bottom + 6) + "px";
-    menu.style.right = (window.innerWidth - rect.right) + "px";
     menu.innerHTML =
       '<button class="menu-item" data-act="rename"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>이름 변경</button>'+
       '<div class="menu-divider"></div>'+
       '<button class="menu-item danger" data-act="delete"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>삭제</button>';
     document.body.appendChild(menu);
-
-    const menuRect = menu.getBoundingClientRect();
-    if(rect.bottom + 6 + menuRect.height > window.innerHeight){
-      menu.style.top = "";
-      menu.style.bottom = (window.innerHeight - rect.top + 6) + "px";
-    }
+    placeMenu(menu, anchor);
 
     menu.querySelector('[data-act="rename"]').addEventListener("click", ()=> openFolderRenameModal(folder));
     menu.querySelector('[data-act="delete"]').addEventListener("click", ()=> openFolderDeleteModal(folder));
@@ -1894,6 +2369,7 @@
       const val = input.value.trim();
       if(!val) return;
       folder.name = val;
+      folder.updatedTs = Date.now();
       persistFolders();
       closeAllOverlays();
       renderAll();
@@ -1922,7 +2398,8 @@
     $("modalLayer").appendChild(modal);
     $("cancelFolderDelete").addEventListener("click", closeAllOverlays);
     $("confirmFolderDelete").addEventListener("click", async ()=>{
-      files.forEach(f=>{ if(f.folderId && descIds.has(f.folderId)) f.folderId = null; });
+      files.forEach(f=>{ if(f.folderId && descIds.has(f.folderId)){ f.folderId = null; f.updatedTs = Date.now(); } });
+      const removedFolders = folders.filter(fo=> descIds.has(fo.id));
       folders = folders.filter(fo=> !descIds.has(fo.id));
       if(folderPath.some(id=> descIds.has(id))){
         const idx = folderPath.findIndex(id=> descIds.has(id));
@@ -1930,10 +2407,16 @@
         libView = "browse";
       }
       expandedFolders.delete(folder.id);
-      await persistFiles();
-      await persistFolders();
+      removedFolders.forEach(fo=> pendingFolderDeletes.add(fo.id));
       closeAllOverlays();
       renderAll();
+      await persistFiles();
+      await persistFolders();
+      if(fb && fb.currentUser){
+        try{ await deleteFoldersFromCloud(fb.currentUser.uid, removedFolders); }
+        finally{ removedFolders.forEach(fo=> pendingFolderDeletes.delete(fo.id)); }
+        syncNow();
+      } else removedFolders.forEach(fo=> pendingFolderDeletes.delete(fo.id));
     });
   }
 
@@ -2095,6 +2578,7 @@
         f.title = title;
         f.chapterCount = chapters.length;
         f.updatedTs = Date.now();
+        f.contentTs = f.updatedTs;
         if(f.progress && typeof f.progress.chapterIdx==="number" && f.progress.chapterIdx >= chapters.length){
           f.progress.chapterIdx = Math.max(0, chapters.length-1);
         }
@@ -2111,6 +2595,7 @@
         chapterCount: chapters.length,
         createdTs: Date.now(),
         updatedTs: Date.now(),
+        contentTs: Date.now(),
         progress: {chapterIdx:0, pct:0, fontSize:18, theme:"light"}
       });
       await S.setText("file-content:"+id, text);
@@ -2223,6 +2708,7 @@
           chapterCount: chapters.length,
           createdTs: Date.now(),
           updatedTs: Date.now(),
+          contentTs: Date.now(),
           progress: {chapterIdx:0, pct:0, fontSize:18, theme:"light"}
         });
         await persistFiles();
@@ -2740,6 +3226,8 @@
     const set = new Set(activeFile.inkChapters || []);
     if(inkStrokes.length > 0) set.add(chapterIdx); else set.delete(chapterIdx);
     activeFile.inkChapters = Array.from(set).sort((a,b)=>a-b);
+    activeFile.inkTs = Object.assign({}, inkTsMap(activeFile));
+    activeFile.inkTs[chapterIdx] = Date.now();
     await persistFiles();
   }
 
@@ -3207,7 +3695,15 @@
     ensureFirebase();
     prepareGis();
     window.addEventListener("focus", ()=>{ if(fb && fb.currentUser) syncNow(); });
+    document.addEventListener("visibilitychange", ()=>{
+      if(document.visibilityState === "visible" && fb && fb.currentUser) syncNow();
+    });
+    window.addEventListener("online", ()=>{ syncRetryDelay = 0; if(fb && fb.currentUser) syncNow(); });
+    window.addEventListener("offline", ()=>{ if(fb && fb.currentUser) setSyncStatus("offline"); });
+    // a safety net behind the live listener, not the main path any more
     setInterval(()=>{ if(fb && fb.currentUser) syncNow(); }, 5*60*1000);
+    // keep the "동기화됨 · n분 전" line honest while the menu sits open
+    setInterval(()=>{ if(syncState === "synced") setSyncStatus("synced"); }, 60*1000);
   })();
 
 })();
