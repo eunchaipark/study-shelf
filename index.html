@@ -1370,6 +1370,18 @@
     if(diff < 86400000) return Math.round(diff/3600000) + "시간 전";
     return new Date(ts).toLocaleDateString("ko-KR", {month:"numeric", day:"numeric"});
   }
+  function friendlySyncError(e){
+    const code = (e && e.code) || "";
+    const msg = String((e && e.message) || e || "");
+    if(code === "permission-denied" || /insufficient permissions/i.test(msg))
+      return "클라우드 접근이 거부됐어요 (Firestore 보안 규칙 확인)";
+    if(code === "unauthenticated") return "로그인이 만료됐어요 · 다시 로그인해주세요";
+    if(code === "unavailable" || /offline|network|failed to fetch/i.test(msg))
+      return "서버에 연결할 수 없어요";
+    if(/resource-exhausted|quota/i.test(code + " " + msg)) return "클라우드 사용량 한도를 넘었어요";
+    return msg.slice(0, 60) || null;
+  }
+
   function syncStatusLabel(){
     if(syncState === "offline") return "오프라인 — 연결되면 자동으로 동기화돼요";
     if(syncState === "syncing") return "동기화 중…";
@@ -1555,6 +1567,7 @@
     const openFileId = activeFile ? activeFile.id : null;
     let openContentChanged = false;
     let failures = 0;
+    let firstFailure = null;
     try{
       const { doc, getDoc, setDoc } = fb.fsMod;
       const revAtStart = libraryRev;
@@ -1660,13 +1673,13 @@
           await pullContentFromCloud(uid, job.rec);
           job.rec.contentTs = job.ts;
           if(job.rec.id === openFileId) openContentChanged = true;
-        }catch(e){ failures++; console.warn("content pull failed", job.rec.id, e); }
+        }catch(e){ failures++; firstFailure = firstFailure || e; console.warn("content pull failed", job.rec.id, e); }
       }
       for(const job of pushContent){
         try{
           await pushContentToCloud(uid, job.rec);
           cloudContentTs[job.rec.id] = job.ts;
-        }catch(e){ failures++; console.warn("content push failed", job.rec.id, e); }
+        }catch(e){ failures++; firstFailure = firstFailure || e; console.warn("content push failed", job.rec.id, e); }
       }
       for(const job of pullInk){
         try{
@@ -1675,13 +1688,13 @@
           const set = new Set(job.rec.inkChapters || []);
           if(n > 0) set.add(job.idx); else set.delete(job.idx);
           job.rec.inkChapters = Array.from(set).sort((a,b)=>a-b);
-        }catch(e){ failures++; console.warn("ink pull failed", job.rec.id, job.idx, e); }
+        }catch(e){ failures++; firstFailure = firstFailure || e; console.warn("ink pull failed", job.rec.id, job.idx, e); }
       }
       for(const job of pushInk){
         try{
           await pushInkToCloud(uid, job.rec, job.idx, job.ts);
           if(cloudInkTs[job.rec.id]) cloudInkTs[job.rec.id][job.idx] = job.ts;
-        }catch(e){ failures++; console.warn("ink push failed", job.rec.id, job.idx, e); }
+        }catch(e){ failures++; firstFailure = firstFailure || e; console.warn("ink push failed", job.rec.id, job.idx, e); }
       }
 
       // `files` *is* mergedFiles, so anything created while the transfers
@@ -1741,7 +1754,8 @@
       renderAll();
       lastSyncTs = Date.now();
       syncRetryDelay = 0;
-      setSyncStatus(failures ? "error" : "synced", failures ? failures+"개 항목 실패 · 곧 다시 시도해요" : null);
+      setSyncStatus(failures ? "error" : "synced",
+        failures ? (friendlySyncError(firstFailure) || (failures+"개 항목 실패")) + " (" + failures + "개)" : null);
       if(failures) scheduleRetry();
 
       // don't yank the page out from under someone mid-paragraph: offer the
@@ -1751,7 +1765,7 @@
       }
     }catch(e){
       console.warn("sync failed", e);
-      setSyncStatus("error", (e && e.message) ? String(e.message).slice(0, 60) : null);
+      setSyncStatus("error", friendlySyncError(e));
       scheduleRetry();
     }finally{
       syncInFlight = false;

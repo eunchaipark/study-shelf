@@ -1,0 +1,15 @@
+rules_version = '2';
+
+// Study Shelf keeps everything it syncs under users/{uid}: the library index
+// and its tombstones, each book's body, its images, its ink, and the reading
+// preferences. Nothing is ever shared between accounts, so "you may touch
+// your own subtree and nothing else" is the entire policy — and it covers
+// collections added later (assets, and the chunk documents large payloads
+// are split across) without needing a new rule for each one.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}
