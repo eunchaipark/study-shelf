@@ -1005,15 +1005,30 @@
     }));
   }
 
+  // Every write swallowed its error, so a full quota — very reachable once
+  // books carry images — or storage blocked in a private window produced an
+  // upload or an edit that looked saved and was simply gone on the next
+  // reload. Say it once, plainly, rather than never.
+  let storageWarned = false;
+  function storageFailed(e){
+    console.warn("storage write failed", e);
+    if(storageWarned) return;
+    storageWarned = true;
+    const name = (e && e.name) || "";
+    const full = name === "QuotaExceededError" || /quota|exceed/i.test(String((e && e.message) || ""));
+    toast(full ? "기기 저장 공간이 가득 차서 저장하지 못했어요"
+               : "이 브라우저에는 저장할 수 없어요 (시크릿 모드인지 확인해주세요)");
+  }
+
   const S = {
     async getJSON(key, fallback){
       try{ const v = await idbGet(key); return v===undefined ? fallback : v; }catch(e){ return fallback; }
     },
-    async setJSON(key, val){ try{ await idbSet(key, val); }catch(e){} },
+    async setJSON(key, val){ try{ await idbSet(key, val); }catch(e){ storageFailed(e); } },
     async getText(key){
       try{ const v = await idbGet(key); return v===undefined ? null : v; }catch(e){ return null; }
     },
-    async setText(key, val){ try{ await idbSet(key, val); }catch(e){} },
+    async setText(key, val){ try{ await idbSet(key, val); }catch(e){ storageFailed(e); } },
     async del(key){ try{ await idbDel(key); }catch(e){} }
   };
   const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
@@ -1698,6 +1713,13 @@
       folders = mergedFolders;
       files = mergedFiles;
 
+      // the folder you are standing in can be deleted on another device;
+      // without this the breadcrumb keeps pointing at it and shows "?"
+      const liveFolder = new Set(folders.map(fo=> fo.id));
+      const strandedAt = folderPath.findIndex(id=> !liveFolder.has(id));
+      if(strandedAt !== -1) folderPath = folderPath.slice(0, strandedAt);
+      expandedFolders.forEach(id=>{ if(!liveFolder.has(id)) expandedFolders.delete(id); });
+
       for(const f of purged){
         await S.del("file-content:"+f.id);
         await S.del("assets:"+f.id);
@@ -1815,16 +1837,24 @@
 
   function sortFiles(arr){
     const a = arr.slice();
-    if(sortMode==="name") return a.sort((x,y)=> x.title.localeCompare(y.title, "ko"));
+    if(sortMode==="name") return a.sort((x,y)=> String(x.title||"").localeCompare(String(y.title||""), "ko"));
     if(sortMode==="added") return a.sort((x,y)=> (y.createdTs||y.updatedTs) - (x.createdTs||x.updatedTs));
     if(sortMode==="progress") return a.sort((x,y)=> (((y.progress&&y.progress.pct)||0)) - (((x.progress&&x.progress.pct)||0)));
     return a.sort((x,y)=> y.updatedTs - x.updatedTs); // 'recent'
   }
 
+  function overlayIsNeeded(){
+    return settingsPop.classList.contains("show")
+      || (drawer.classList.contains("show") && !isTabletUp())
+      || !!document.querySelector(".menu-pop")
+      || !!$("modalLayer").firstChild;
+  }
+  function syncOverlay(){ $("overlay").classList.toggle("show", overlayIsNeeded()); }
+
   function closeAllOverlays(){
-    $("overlay").classList.remove("show");
     $("modalLayer").innerHTML = "";
     document.querySelectorAll(".menu-pop").forEach(n=>n.remove());
+    syncOverlay();
   }
 
   // Anchors a already-appended pop-up menu, clamped to the viewport on both
@@ -1970,9 +2000,10 @@
     if(searchQuery.trim()){
       const note = document.createElement("div");
       note.className = "rail-crumbs";
-      const label = document.createElement("span");
+      const label = document.createElement("button");
       label.className = "crumb-item active";
-      label.textContent = "검색 결과";
+      label.textContent = "검색 결과 " + visibleFiles().length + "건 · 지우기 ✕";
+      label.addEventListener("click", ()=>{ resetSearch(); renderAll(); });
       note.appendChild(label);
       rail.appendChild(note);
       return;
@@ -2126,7 +2157,7 @@
   function visibleFiles(){
     if(searchQuery.trim()){
       const q = searchQuery.trim().toLowerCase();
-      return sortFiles(files.filter(f=> f.title.toLowerCase().includes(q)));
+      return sortFiles(files.filter(f=> String(f.title||"").toLowerCase().includes(q)));
     }
     if(libView==="all") return sortFiles(files);
     if(libView==="uncategorized") return sortFiles(files.filter(f=>!f.folderId));
@@ -2217,10 +2248,12 @@
     searchQuery = "";
     searchInput.value = "";
     searchClearBtn.classList.add("hidden");
+    searchToggleBtn.classList.toggle("active", searchRow.classList.contains("open"));
   }
   searchInput.addEventListener("input", ()=>{
     searchQuery = searchInput.value;
     searchClearBtn.classList.toggle("hidden", !searchQuery);
+    markSearchActive(searchRow.classList.contains("open"));
     renderAll();
   });
   searchClearBtn.addEventListener("click", ()=>{
@@ -2234,16 +2267,19 @@
   // spending a full row on it
   const searchRow = document.querySelector(".search-row");
   const searchToggleBtn = $("searchToggleBtn");
+  function markSearchActive(rowOpen){
+    searchToggleBtn.classList.toggle("active", rowOpen || !!searchQuery.trim());
+  }
   searchToggleBtn.addEventListener("click", ()=>{
     const isOpen = searchRow.classList.toggle("open");
-    searchToggleBtn.classList.toggle("active", isOpen);
+    markSearchActive(isOpen);
     if(isOpen) searchInput.focus();
   });
   document.addEventListener("click", (e)=>{
     if(!searchRow.classList.contains("open")) return;
     if(e.target.closest(".lib-search-bar")) return;
     searchRow.classList.remove("open");
-    searchToggleBtn.classList.remove("active");
+    markSearchActive(false);
   });
 
   const sortSelect = $("sortSelect");
@@ -2653,9 +2689,11 @@
     const chapters = splitChapters(text, title, editorPendingAssets);
     const usedAssets = {};
     Object.keys(editorPendingAssets).forEach(name=>{ if(text.includes(name)) usedAssets[name] = editorPendingAssets[name]; });
-    if(editingFileId){
-      const f = files.find(x=>x.id===editingFileId);
-      if(f){
+    const existing = editingFileId ? files.find(x=>x.id===editingFileId) : null;
+    const originalVanished = !!editingFileId && !existing;
+    if(existing){
+      {
+        const f = existing;
         f.title = title;
         f.chapterCount = chapters.length;
         f.updatedTs = Date.now();
@@ -2669,6 +2707,9 @@
         await persistFiles();
       }
     } else {
+      // reached either for a genuinely new file or because the one being
+      // edited was deleted underneath us; in the latter case keeping the work
+      // as a new file is the only outcome that doesn't lose it
       const id = genId();
       files.push({
         id, name:title+".md", title,
@@ -2683,8 +2724,9 @@
       if(Object.keys(usedAssets).length) await S.setJSON("assets:"+id, usedAssets);
       await persistFiles();
     }
-    const savedId = editingFileId;
-    const returnToReader = editorReturnScreen==="reader" && activeFile && activeFile.id===savedId;
+    if(originalVanished) toast("원본이 다른 기기에서 삭제돼서, 새 파일로 저장했어요");
+    const savedId = originalVanished ? null : editingFileId;
+    const returnToReader = editorReturnScreen==="reader" && activeFile && savedId && activeFile.id===savedId;
     editorOriginalTitle = editorTitleInput.value;
     editorOriginalText = editorTextarea.value;
     editorScreen.classList.add("hidden");
@@ -2755,7 +2797,12 @@
   async function handleFileBatch(fileList){
     const mdFiles = fileList.filter(f=> /\.(md|markdown)$/i.test(f.name));
     const assetFiles = fileList.filter(f=> IMAGE_EXT_RE.test(f.name));
-    if(mdFiles.length===0) return;
+    if(mdFiles.length===0){
+      if(fileList.length) toast(assetFiles.length
+        ? "이미지는 마크다운 파일과 함께 올려주세요"
+        : "마크다운(.md) 파일만 서재에 추가할 수 있어요");
+      return;
+    }
     let assetMap = {};
     if(assetFiles.length){
       for(const af of assetFiles){
@@ -2796,6 +2843,9 @@
         renderAll();
         resolve();
       };
+      // without this the promise never settles and every file queued behind
+      // this one is dropped too
+      reader.onerror = ()=>{ toast("\""+file.name+"\" 파일을 읽지 못했어요"); resolve(); };
       reader.readAsText(file, "utf-8");
     });
   }
@@ -3061,6 +3111,10 @@
 
   // desktop/laptop: arrow keys flip chapters, same as the prev/next buttons
   document.addEventListener("keydown", (e)=>{
+    if(e.key==="Escape" && !readerScreenVisible()){
+      if(document.querySelector(".menu-pop") || $("modalLayer").firstChild) closeAllOverlays();
+      return;
+    }
     if(!readerScreenVisible()) return;
     if(e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
     if(e.key==="Escape"){
@@ -3121,8 +3175,8 @@
   // doesn't need the dimming #overlay (and shouldn't block taps on the reader
   // behind it — there is no "behind" once it's part of the layout).
   function isTabletUp(){ return window.innerWidth >= 720; }
-  function openDrawer(){ drawer.classList.add("show"); if(!isTabletUp()) $("overlay").classList.add("show"); }
-  function closeDrawer(){ drawer.classList.remove("show"); if(!isTabletUp()) $("overlay").classList.remove("show"); }
+  function openDrawer(){ drawer.classList.add("show"); syncOverlay(); }
+  function closeDrawer(){ drawer.classList.remove("show"); syncOverlay(); }
   $("tocBtn").addEventListener("click", ()=>{
     buildTOC();
     if(drawer.classList.contains("show")) closeDrawer(); else openDrawer();
@@ -3257,8 +3311,8 @@
     handle.addEventListener("mousedown", onMouseDown);
   })();
 
-  function openSettings(){ settingsPop.classList.add("show"); $("overlay").classList.add("show"); }
-  function closeSettings(){ settingsPop.classList.remove("show"); $("overlay").classList.remove("show"); }
+  function openSettings(){ settingsPop.classList.add("show"); syncOverlay(); }
+  function closeSettings(){ settingsPop.classList.remove("show"); syncOverlay(); }
   $("settingsBtn").addEventListener("click", (e)=>{
     e.stopPropagation();
     settingsPop.classList.contains("show") ? closeSettings() : openSettings();
@@ -3828,7 +3882,8 @@
     penMode = on;
     $("penBtn").classList.toggle("active", on);
     if(inkCanvas) inkCanvas.classList.toggle("inactive", !penMode);
-    if(on){ closeSettings(); openInkPop(); } else { closeInkPop(); hideInkCursor(); }
+    if(on){ closeSettings(); if(!isTabletUp()) closeDrawer(); openInkPop(); }
+    else { closeInkPop(); hideInkCursor(); }
   }
   // no shared #overlay here on purpose: it sits above the ink canvas
   // (z-index 50 vs 5) and would silently block every drawing gesture
@@ -3884,12 +3939,29 @@
   });
   $("inkUndoBtn").addEventListener("click", undoLastStroke);
   $("inkRedoBtn").addEventListener("click", redoLastStroke);
+  // One tap used to destroy every mark on the chapter with nothing to undo
+  // it — and sync then carried that to the other devices. Offer the way back
+  // instead of adding a confirm dialog in front of the common case.
   $("inkClearBtn").addEventListener("click", ()=>{
+    if(!inkStrokes.length) return;
+    const cleared = inkStrokes;
+    const fromFile = activeFile && activeFile.id, fromChapter = chapterIdx;
     inkStrokes = [];
     inkRedoStack = [];
     saveInkForChapter();
     redrawInk();
     updateInkUndoButtons();
+    toast("이 챕터의 필기를 모두 지웠어요", "되돌리기", ()=>{
+      // only if you are still looking at the chapter it came from
+      if(!activeFile || activeFile.id !== fromFile || chapterIdx !== fromChapter){
+        toast("필기를 지운 챕터를 벗어나서 되돌릴 수 없어요");
+        return;
+      }
+      inkStrokes = cleared;
+      saveInkForChapter();
+      redrawInk();
+      updateInkUndoButtons();
+    });
   });
 
   window.addEventListener("resize", ()=>{
@@ -3909,7 +3981,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "46";
+  const SW_VERSION = "47";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
