@@ -1230,7 +1230,9 @@
     return JSON.stringify((strokes||[]).map(s=>{
       const p = [];
       for(const pt of (s.points||[])) p.push(Math.round(pt[0]*1e4)/1e4, Math.round(pt[1]*1e4)/1e4);
-      return { t:s.tool, c:s.color, w:s.width, p };
+      const out = { t:s.tool, c:s.color, w:s.width, p };
+      if(s.block != null) out.b = s.block;
+      return out;
     }));
   }
   function decodeStrokes(str){
@@ -1241,7 +1243,9 @@
       const pts = [];
       const flat = s.p || [];
       for(let i=0;i+1<flat.length;i+=2) pts.push([flat[i], flat[i+1]]);
-      return { tool:s.t, color:s.c, width:s.w, points:pts };
+      const st = { tool:s.t, color:s.c, width:s.w, points:pts };
+      if(s.b != null) st.block = s.b;
+      return st;
     });
   }
 
@@ -3399,6 +3403,17 @@
     const key = inkKey();
     inkStrokes = key ? await S.getJSON(key, []) : [];
     inkRedoStack = [];
+    // Strokes made before anchoring existed are still chapter-relative. They
+    // are correct at this instant — this is the size they were last seen at
+    // — so pinning them to their blocks now is the one moment that freezes
+    // them where they belong instead of letting them drift further.
+    if(inkStrokes.some(st=> st && st.block == null)){
+      const boxes = inkBlockBoxes();
+      if(boxes.length){
+        inkStrokes.forEach(st=> anchorStroke(st, boxes));
+        saveInkForChapter();
+      }
+    }
     updateInkUndoButtons();
   }
   async function saveInkForChapter(){
@@ -3518,30 +3533,94 @@
     }
   }
 
+  /* ---- strokes are anchored to the block they were written on ------------
+     Coordinates used to be a fraction of the whole chapter, which only holds
+     while the chapter stays exactly as tall as it was when the stroke was
+     made. Change the reading size and the text reflows — and not uniformly,
+     since headings, images and code blocks each grow by different amounts —
+     so a line drawn under one sentence ended up somewhere else entirely.
+
+     Each stroke now records which top-level block it was written over and
+     stores y as a fraction of that block, so it moves and stretches with the
+     paragraph it belongs to. x stays a fraction of the column, which the
+     reading size does not change.
+
+     The block index is simply its position among readInner's children: the
+     chapter is rebuilt from the same markdown every time, so that order is
+     stable. Editing the markdown can shift it — ink drifting after an edit
+     is expected either way — and an index past the end falls back to the
+     last block that does exist rather than collapsing to the top. */
+  function inkBlockBoxes(){
+    const out = [];
+    for(const el of readInner.children){
+      if(el.classList && el.classList.contains("ink-canvas")) continue;
+      out.push({ top: el.offsetTop, height: Math.max(1, el.offsetHeight) });
+    }
+    return out;
+  }
+  function strokeYMap(stroke, h, boxes){
+    if(stroke.block == null || !boxes || !boxes.length) return { off: 0, scale: h };
+    const box = boxes[Math.min(stroke.block, boxes.length - 1)];
+    return { off: box.top, scale: box.height };
+  }
+  // Chapter-relative in, block-relative out. Anchors on the stroke's own
+  // vertical middle, so a long underline belongs to the line it underlines
+  // rather than to whichever block its first point happened to land in.
+  function anchorStroke(stroke, boxes){
+    if(!stroke || !stroke.points || !stroke.points.length || stroke.block != null) return;
+    const h = Math.max(1, readInner.scrollHeight);
+    boxes = boxes || inkBlockBoxes();
+    if(!boxes.length) return;
+    let y0 = Infinity, y1 = -Infinity;
+    for(const p of stroke.points){ if(p[1] < y0) y0 = p[1]; if(p[1] > y1) y1 = p[1]; }
+    if(y0 === Infinity) return;
+    const midPx = ((y0 + y1) / 2) * h;
+    let idx = -1;
+    for(let i = 0; i < boxes.length; i++){
+      if(midPx >= boxes[i].top && midPx < boxes[i].top + boxes[i].height){ idx = i; break; }
+    }
+    if(idx === -1){
+      // written in the margin between two blocks — take the nearer one
+      let bestD = Infinity;
+      for(let i = 0; i < boxes.length; i++){
+        const d = Math.abs(boxes[i].top + boxes[i].height / 2 - midPx);
+        if(d < bestD){ bestD = d; idx = i; }
+      }
+    }
+    if(idx < 0) return;
+    const box = boxes[idx];
+    stroke.block = idx;
+    stroke.points = stroke.points.map(p=> [p[0], (p[1] * h - box.top) / box.height]);
+    strokeBounds.delete(stroke);
+  }
+
   // Smooths a raw point list into a quadratic-curve path: each real point
   // becomes a curve control point, with the midpoint between consecutive
   // points as the curve's on-path endpoint — the standard freehand-smoothing
   // technique, avoids the faceted look of plain point-to-point lineTo.
-  function tracePath(ctx, points, w, h){
+  function tracePath(ctx, points, w, yOff, yScale){
+    const Y = t => yOff + t * yScale;
     if(points.length === 1){
       const p = points[0];
-      ctx.moveTo(p[0]*w, p[1]*h);
-      ctx.lineTo(p[0]*w, p[1]*h);
+      ctx.moveTo(p[0]*w, Y(p[1]));
+      ctx.lineTo(p[0]*w, Y(p[1]));
       return;
     }
-    ctx.moveTo(points[0][0]*w, points[0][1]*h);
+    ctx.moveTo(points[0][0]*w, Y(points[0][1]));
     let i;
     for(i=1;i<points.length-1;i++){
       const cx = (points[i][0]+points[i+1][0])/2*w;
-      const cy = (points[i][1]+points[i+1][1])/2*h;
-      ctx.quadraticCurveTo(points[i][0]*w, points[i][1]*h, cx, cy);
+      const cy = Y((points[i][1]+points[i+1][1])/2);
+      ctx.quadraticCurveTo(points[i][0]*w, Y(points[i][1]), cx, cy);
     }
     const last = points[points.length-1];
-    ctx.lineTo(last[0]*w, last[1]*h);
+    ctx.lineTo(last[0]*w, Y(last[1]));
   }
 
   // Cached per stroke so a chapter with hundreds of them only pays for the
-  // handful actually on screen.
+  // handful actually on screen. The bounds are in the stroke's own
+  // coordinates; where those land depends on its block, so the mapping is
+  // applied at the point of use.
   function boundsOf(stroke){
     let b = strokeBounds.get(stroke);
     if(b) return b;
@@ -3554,15 +3633,18 @@
     strokeBounds.set(stroke, b);
     return b;
   }
-  function strokeInWindow(stroke, h){
+  function strokeInWindow(stroke, h, boxes){
     const b = boundsOf(stroke);
     if(b.y0 === Infinity) return false;
+    const m = strokeYMap(stroke, h, boxes);
     const pad = (stroke.width || 8) + 4;
-    return b.y1 * h + pad >= inkWinTop && b.y0 * h - pad <= inkWinTop + inkWinH;
+    return m.off + b.y1 * m.scale + pad >= inkWinTop
+        && m.off + b.y0 * m.scale - pad <= inkWinTop + inkWinH;
   }
 
-  function paintStroke(stroke, w, h, only){
+  function paintStroke(stroke, w, h, only, boxes){
     if(!stroke.points || stroke.points.length < 1) return;
+    const m = strokeYMap(stroke, h, boxes);
     // An eraser has to reach the highlighter too — it used to be applied
     // only to the pen layer, so marker strokes simply could not be rubbed
     // out. Replayed in order on each layer, so it erases exactly what was
@@ -3573,7 +3655,7 @@
       ctx.save();
       applyStrokeStyle(ctx, stroke.tool, stroke.color, stroke.width);
       ctx.beginPath();
-      tracePath(ctx, stroke.points, w, h);
+      tracePath(ctx, stroke.points, w, m.off, m.scale);
       ctx.stroke();
       ctx.restore();
     }
@@ -3593,11 +3675,12 @@
   function redrawInk(){
     if(!inkCtx || !highlightCtx) return;
     const { w, h } = inkContentSize();
+    const boxes = inkBlockBoxes();   // measured once for the whole pass
     clearInkSurfaces();
     for(const s of inkStrokes){
-      if(strokeInWindow(s, h)) paintStroke(s, w, h);
+      if(strokeInWindow(s, h, boxes)) paintStroke(s, w, h, null, boxes);
     }
-    if(inkDrawing) paintStroke(inkDrawing, w, h);
+    if(inkDrawing) paintStroke(inkDrawing, w, h, null, boxes);
   }
 
   function pointerToNorm(e){
@@ -3632,10 +3715,11 @@
       highlightCtx.setTransform(1,0,0,1,0,0);
       highlightCtx.clearRect(0,0,highlightCtx.canvas.width, highlightCtx.canvas.height);
       highlightCtx.restore();
+      const boxes = inkBlockBoxes();
       for(const st of inkStrokes){
-        if((st.tool === "highlighter" || st.tool === "eraser") && strokeInWindow(st, h)) paintStroke(st, w, h, highlightCtx);
+        if((st.tool === "highlighter" || st.tool === "eraser") && strokeInWindow(st, h, boxes)) paintStroke(st, w, h, highlightCtx, boxes);
       }
-      if(inkDrawing && inkDrawing.tool === "highlighter") paintStroke(inkDrawing, w, h, highlightCtx);
+      if(inkDrawing && inkDrawing.tool === "highlighter") paintStroke(inkDrawing, w, h, highlightCtx, boxes);
     });
   }
 
@@ -3803,8 +3887,10 @@
       if(inkDrawing && e.pointerType==="pen" && e.pointerId===inkActivePointerId){
         const wantTool = isBarrelHeld(e) ? "eraser" : inkTool;
         if(wantTool !== inkDrawing.tool){
-          if(inkDrawing.points.length>1){ inkStrokes.push(inkDrawing); inkRedoStack = []; }
-          const lastPt = inkDrawing.points[inkDrawing.points.length-1];
+          // read the hand-off point before anchoring rewrites the committed
+          // stroke's coordinates — the new stroke is still chapter-relative
+          const lastPt = inkDrawing.points[inkDrawing.points.length-1].slice();
+          if(inkDrawing.points.length>1){ anchorStroke(inkDrawing); inkStrokes.push(inkDrawing); inkRedoStack = []; }
           inkDrawing = { tool:wantTool, color:inkColor, width:strokeWidthFor(e, wantTool), points:[lastPt] };
         }
       }
@@ -3855,6 +3941,7 @@
       const finished = inkDrawing;
       inkDrawing = null;
       if(finished.points.length>1){
+        anchorStroke(finished);
         inkStrokes.push(finished);
         inkRedoStack = [];
         saveInkForChapter();
@@ -3981,7 +4068,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "47";
+  const SW_VERSION = "48";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
