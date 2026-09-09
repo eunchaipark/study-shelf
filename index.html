@@ -458,7 +458,18 @@
   .read-inner pre{background:rgba(0,0,0,0.06); padding:16px; border-radius:var(--r-md); overflow-x:auto; margin:0 0 1.2em;}
   .read-inner pre code{background:none; padding:0;}
   .read-inner img{max-width:100%; border-radius:var(--r-sm); display:block; margin:1em auto;}
-  .read-inner table{border-collapse:collapse; width:100%; margin:0 0 1.2em; font-size:.92em;}
+  /* A table wide enough to exceed the column scrolls inside its own box,
+     the way pre and .katex-display already do. Without this the table
+     dragged the whole reading pane sideways — headings, paragraphs and all
+     — and that drag was also what the page-turn swipe was reading. */
+  .table-scroll{overflow-x:auto; -webkit-overflow-scrolling:touch; max-width:100%; margin:0 0 1.2em;}
+  /* width:max-content rather than 100%: at 100% a table with more columns
+     than fit does not overflow, it *compresses*, wrapping every cell down to
+     roughly one character per line — which is unreadable and gives the
+     reader nothing to scroll. Sizing to content lets it stay legible and
+     spill into the scroll box above, while min-width keeps a narrow table
+     stretched across the column exactly as before. */
+  .read-inner table{border-collapse:collapse; width:max-content; min-width:100%; margin:0; font-size:.92em;}
   .read-inner th,.read-inner td{border:1px solid rgba(0,0,0,0.15); padding:8px 10px; text-align:left;}
   .read-inner hr{border:none; border-top:1px solid rgba(0,0,0,0.15); margin:2em 0;}
   .read-inner a{color:var(--accent-500);}
@@ -2511,6 +2522,7 @@
   function renderEditorPreviewContent(){
     const chapters = splitChapters(editorTextarea.value, editorTitleInput.value.trim() || "제목 없음", editorPendingAssets);
     editorPreviewPane.innerHTML = chapters.map(c=>c.html).join("");
+    wrapWideTables(editorPreviewPane);
     editorPreviewPane.querySelectorAll("pre code").forEach(block=>{ try{ hljs.highlightElement(block); }catch(e){} });
   }
   function insertAtCursor(textarea, text){
@@ -2929,9 +2941,23 @@
     renderChapter((f.progress && f.progress.chapterIdx) || 0);
   }
 
+  // Tables come out of the markdown renderer bare; give each one its own
+  // horizontal scroll box so a wide one scrolls in place instead of
+  // displacing the column around it.
+  function wrapWideTables(root){
+    root.querySelectorAll("table").forEach(t=>{
+      if(t.parentElement && t.parentElement.classList.contains("table-scroll")) return;
+      const wrap = document.createElement("div");
+      wrap.className = "table-scroll";
+      t.parentNode.insertBefore(wrap, t);
+      wrap.appendChild(t);
+    });
+  }
+
   async function renderChapter(idx, resetScroll){
     chapterIdx = Math.max(0, Math.min(idx, activeChapters.length-1));
     readInner.innerHTML = activeChapters[chapterIdx].html;
+    wrapWideTables(readInner);
     readInner.querySelectorAll("pre code").forEach(block=>{ try{ hljs.highlightElement(block); }catch(e){} });
     // .read-scroll has scroll-behavior:smooth (for deliberate jumps like
     // this one, in principle) but the content was just replaced wholesale —
@@ -3015,14 +3041,31 @@
     }
   });
 
-  let touchX = null, touchY = null;
+  // A sideways drag that starts inside something which scrolls sideways —
+  // a wide table, a code block, display math — belongs to that box. Turning
+  // the chapter out from under it was the most reliable way to lose your
+  // place while trying to read the right-hand columns of a table.
+  function scrollsHorizontally(el){
+    while(el && el !== readScroll){
+      if(el.scrollWidth > el.clientWidth + 1){
+        const ox = getComputedStyle(el).overflowX;
+        if(ox === "auto" || ox === "scroll") return true;
+      }
+      el = el.parentElement;
+    }
+    return readScroll.scrollWidth > readScroll.clientWidth + 1;
+  }
+
+  let touchX = null, touchY = null, swipeBlocked = false;
   readScroll.addEventListener("touchstart", (e)=>{
     if(penMode) return;
     touchX = e.touches[0].clientX;
     touchY = e.touches[0].clientY;
+    swipeBlocked = scrollsHorizontally(e.target);
   }, {passive:true});
   readScroll.addEventListener("touchend", (e)=>{
     if(penMode || touchX===null) return;
+    if(swipeBlocked){ touchX = null; touchY = null; swipeBlocked = false; return; }
     const dx = e.changedTouches[0].clientX - touchX;
     const dy = e.changedTouches[0].clientY - touchY;
     // only treat as a page-turn swipe if the drag is clearly horizontal,
