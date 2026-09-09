@@ -410,6 +410,7 @@
   .modal h4{margin:0 0 14px; font-size:15px; font-family:var(--display-font); font-weight:600; color:var(--text-900); letter-spacing:-.01em;}
   .modal h4 .modal-hint{font-family:var(--ui-font); font-weight:500; font-size:12.5px; color:var(--text-500);}
   .modal p{margin:0 0 18px; font-size:13.5px; color:var(--text-500); line-height:1.55;}
+  .modal h4, .modal p{overflow-wrap:anywhere;}
   .modal input[type="text"]{
     width:100%; background:var(--bg-app); border:1px solid var(--line-strong); color:var(--text-900);
     border-radius:var(--r-sm); padding:11px 12px; font-size:14px; margin-bottom:18px; transition:border-color .15s var(--ease);
@@ -445,7 +446,10 @@
   .read-inner{
     position:relative; max-width:min(680px, 92vw); margin:0 auto; padding:44px 6px 96px;
     font-family:var(--read-font); font-size:var(--read-size); line-height:1.85; color:var(--read-text, #1d1e21);
+    overflow-wrap:anywhere;
   }
+  /* code keeps its own horizontal scroll box instead of wrapping mid-token */
+  .read-inner pre{overflow-wrap:normal;}
   .read-inner h1,.read-inner h2,.read-inner h3{font-weight:700; line-height:1.35; margin:1.4em 0 .6em; color:inherit; letter-spacing:-.01em;}
   .read-inner h1{font-size:1.55em; border-bottom:1px solid currentColor; padding-bottom:.35em; opacity:1;}
   .read-inner h2{font-size:1.28em;}
@@ -1013,7 +1017,7 @@
     async del(key){ try{ await idbDel(key); }catch(e){} }
   };
   const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
-  const escapeHtml = (s) => String(s).replace(/[&<>]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[ch]));
+  const escapeHtml = (s) => String(s).replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
 
   /* ---------------- library state ---------------- */
   let folders = [];   // [{id, name, parentId}]  parentId=null -> root-level folder
@@ -2531,6 +2535,30 @@
     textarea.selectionStart = textarea.selectionEnd = start + text.length;
     textarea.focus();
   }
+  // CommonMark only accepts a bare link destination with no whitespace and
+  // balanced parentheses. A Windows/Android screenshot is named things like
+  // "스크린샷 2026-01-01 (1).png", which has both — and marked then renders
+  // the whole line as literal text, so the picture simply never appeared.
+  // Angle brackets are the escape hatch the spec provides.
+  function mdLinkDest(name){
+    return /[\s()<>]/.test(name) ? "<" + name.replace(/([<>\\])/g, "\\$1") + ">" : name;
+  }
+  function mdLinkText(name){
+    return name.replace(/([\[\]\\])/g, "\\$1");
+  }
+  // Two files can arrive under one name (two folders' worth of
+  // "screenshot.png"); without this the second overwrote the first and both
+  // references in the document resolved to the same picture.
+  function uniqueAssetName(name){
+    if(editorPendingAssets[name] === undefined) return name;
+    const dot = name.lastIndexOf(".");
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : "";
+    let n = 2;
+    while(editorPendingAssets[stem + "-" + n + ext] !== undefined) n++;
+    return stem + "-" + n + ext;
+  }
+
   // shared by the 이미지 button, dropping image files onto the editor, and
   // pasting an image (e.g. a screenshot) straight from the clipboard
   async function attachEditorImages(imgFiles){
@@ -2538,8 +2566,10 @@
     const inserts = [];
     for(const imf of imgFiles){
       try{
-        editorPendingAssets[imf.name] = await readFileAsDataURL(imf);
-        inserts.push("!["+imf.name.replace(/\.[^.]+$/,"")+"]("+imf.name+")");
+        const url = await readFileAsDataURL(imf);
+        const name = uniqueAssetName(imf.name);
+        editorPendingAssets[name] = url;
+        inserts.push("!["+mdLinkText(name.replace(/\.[^.]+$/,""))+"]("+mdLinkDest(name)+")");
       }catch(err){}
     }
     if(inserts.length){
@@ -2920,7 +2950,11 @@
     const f = files.find(x=>x.id===id);
     if(!f) return;
     const text = await S.getText("file-content:"+id);
-    if(text==null) return;
+    if(text==null){
+      toast(fb && fb.currentUser ? "아직 내려받지 못한 책이에요 · 동기화를 기다려주세요" : "이 책의 본문을 찾을 수 없어요");
+      if(fb && fb.currentUser) syncNow();
+      return;
+    }
     const assetMap = await S.getJSON("assets:"+id, null);
     activeFile = f;
     activeChapters = splitChapters(text, f.title, assetMap);
@@ -3056,16 +3090,21 @@
     return readScroll.scrollWidth > readScroll.clientWidth + 1;
   }
 
+  // Set by the TOC drawer's own drag (below) as soon as it takes a gesture.
+  // readScroll's touchend runs before the drawer's, which is on an ancestor,
+  // so the flag is still standing when the page-turn checks it.
+  let drawerDragActive = false;
   let touchX = null, touchY = null, swipeBlocked = false;
   readScroll.addEventListener("touchstart", (e)=>{
     if(penMode) return;
     touchX = e.touches[0].clientX;
     touchY = e.touches[0].clientY;
     swipeBlocked = scrollsHorizontally(e.target);
+    drawerDragActive = false;
   }, {passive:true});
   readScroll.addEventListener("touchend", (e)=>{
     if(penMode || touchX===null) return;
-    if(swipeBlocked){ touchX = null; touchY = null; swipeBlocked = false; return; }
+    if(swipeBlocked || drawerDragActive){ touchX = null; touchY = null; swipeBlocked = false; return; }
     const dx = e.changedTouches[0].clientX - touchX;
     const dy = e.changedTouches[0].clientY - touchY;
     // only treat as a page-turn swipe if the drag is clearly horizontal,
@@ -3159,6 +3198,7 @@
         undecided = false;
         if(Math.abs(dx) < Math.abs(dy) * VERTICAL_TOLERANCE) return; // vertical — leave it to native scroll
         dragging = true;
+        drawerDragActive = true; // this gesture is the drawer's; no page turn
         drawer.style.transition = "none";
       }
       if(!dragging) return;
@@ -3168,6 +3208,8 @@
     }
     function onEnd(e){
       undecided = false;
+      // cleared after readScroll's touchend has already read it
+      setTimeout(()=>{ drawerDragActive = false; }, 0);
       if(!dragging){ return; }
       dragging = false;
       const t = e.changedTouches[0];
@@ -3333,19 +3375,36 @@
     resizeInkCanvas();
   }
 
+  // One canvas spans the whole chapter, and browsers cap both a canvas's
+  // dimensions and its total area. A long chapter sailed past that and the
+  // canvas came back *alive but inert* — getContext succeeded, strokes drew
+  // nothing, no error anywhere. Measured on a 107,963px chapter at dpr 3 the
+  // ink layer was asking for 1137x323889. Drop to a coarser backing store
+  // rather than an unusable one, and keep a lid on memory while at it: there
+  // are two of these canvases and every pixel costs 4 bytes.
+  const INK_MAX_DIM = 16384;
+  const INK_MAX_PIXELS = 12e6;
+  function inkBackingScale(w, h){
+    let s = window.devicePixelRatio || 1;
+    if(w > 0) s = Math.min(s, INK_MAX_DIM / w);
+    if(h > 0) s = Math.min(s, INK_MAX_DIM / h);
+    if(w > 0 && h > 0) s = Math.min(s, Math.sqrt(INK_MAX_PIXELS / (w * h)));
+    return Math.max(0.05, s);
+  }
+
   function resizeInkCanvas(){
     if(!inkCanvas || !highlightCanvas) return;
     const w = readInner.clientWidth;
     const h = readInner.scrollHeight;
-    const dpr = window.devicePixelRatio || 1;
+    const scale = inkBackingScale(w, h);
     [inkCanvas, highlightCanvas].forEach(c=>{
-      c.width = Math.max(1, Math.round(w*dpr));
-      c.height = Math.max(1, Math.round(h*dpr));
+      c.width = Math.max(1, Math.round(w*scale));
+      c.height = Math.max(1, Math.round(h*scale));
       c.style.width = w+"px";
       c.style.height = h+"px";
     });
-    inkCtx.setTransform(dpr,0,0,dpr,0,0);
-    highlightCtx.setTransform(dpr,0,0,dpr,0,0);
+    inkCtx.setTransform(scale,0,0,scale,0,0);
+    highlightCtx.setTransform(scale,0,0,scale,0,0);
     redrawInk();
   }
 
@@ -3735,7 +3794,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "39";
+  const SW_VERSION = "45";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
