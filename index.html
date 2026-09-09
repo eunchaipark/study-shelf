@@ -3021,6 +3021,7 @@
   }
   readScroll.addEventListener("scroll", ()=>{
     updateProgress();
+    syncInkWindow();
     clearTimeout(readScroll._t);
     readScroll._t = setTimeout(saveProgress, 500);
   });
@@ -3336,7 +3337,7 @@
   let inkTouchPointers = new Map(); // touch pointerId -> last clientY, for two-finger-scroll detection
   let inkMultiTouchActive = false;  // sticky until every finger lifts, so 2->1 finger mid-gesture doesn't suddenly draw
   let inkPanLastCentroidY = null;
-  let inkLastLoggedButtons = null;  // TEMPORARY, see inkDebugLog
+  let inkLastLoggedButtons = null;  // last-seen button bits, so the log only fires on a change
 
   function inkKey(){ return activeFile ? "ink:"+activeFile.id+":"+chapterIdx : null; }
 
@@ -3375,37 +3376,67 @@
     resizeInkCanvas();
   }
 
-  // One canvas spans the whole chapter, and browsers cap both a canvas's
-  // dimensions and its total area. A long chapter sailed past that and the
-  // canvas came back *alive but inert* — getContext succeeded, strokes drew
-  // nothing, no error anywhere. Measured on a 107,963px chapter at dpr 3 the
-  // ink layer was asking for 1137x323889. Drop to a coarser backing store
-  // rather than an unusable one, and keep a lid on memory while at it: there
-  // are two of these canvases and every pixel costs 4 bytes.
-  const INK_MAX_DIM = 16384;
-  const INK_MAX_PIXELS = 12e6;
-  function inkBackingScale(w, h){
-    let s = window.devicePixelRatio || 1;
-    if(w > 0) s = Math.min(s, INK_MAX_DIM / w);
-    if(h > 0) s = Math.min(s, INK_MAX_DIM / h);
-    if(w > 0 && h > 0) s = Math.min(s, Math.sqrt(INK_MAX_PIXELS / (w * h)));
-    return Math.max(0.05, s);
+  /* ---- the ink surface is a window onto the chapter, not the whole of it --
+     A canvas spanning the entire chapter is what forced the earlier
+     resolution clamp: browsers cap a canvas's dimensions and area, and at
+     full device pixel ratio a long chapter blew past both — 1137x323889 was
+     asked for on a 107,963px chapter, and the canvas came back alive but
+     inert, drawing nothing at all. Even well short of the cap it was
+     ruinous: ~546MB across the two layers for a 20,000px chapter, and every
+     committed stroke repainted all of it.
+
+     Instead the canvases cover the viewport plus a screen's worth of margin
+     either side, positioned inside the (natively scrolled) content. They
+     only move when the reader scrolls past that margin, so scrolling stays
+     free, memory is bounded by the screen rather than the chapter, and the
+     backing store is always full resolution however long the chapter is. */
+  let inkWinTop = 0;     // window's offset within readInner, in CSS px
+  let inkWinH = 0;
+  const strokeBounds = new WeakMap(); // stroke -> normalized bbox, for culling
+
+  function inkContentSize(){
+    return { w: readInner.clientWidth, h: Math.max(1, readInner.scrollHeight) };
+  }
+
+  function layoutInkWindow(force){
+    if(!inkCanvas || !highlightCanvas) return false;
+    const { w, h } = inkContentSize();
+    const viewH = readScroll.clientHeight || 1;
+    const margin = Math.max(240, Math.round(viewH));
+    const winH = Math.min(h, viewH + margin * 2);
+    const visTop = readScroll.scrollTop - readInner.offsetTop;
+
+    // still inside the current window (and nothing resized)? nothing to do —
+    // this is the common case on every scroll event
+    if(!force && winH === inkWinH && visTop >= inkWinTop && visTop + viewH <= inkWinTop + inkWinH
+       && inkCanvas.style.width === w + "px"){
+      return false;
+    }
+    const top = Math.max(0, Math.min(Math.round(visTop - margin), Math.max(0, h - winH)));
+    inkWinTop = top;
+    inkWinH = winH;
+
+    const dpr = window.devicePixelRatio || 1;
+    [inkCanvas, highlightCanvas].forEach(c=>{
+      c.width = Math.max(1, Math.round(w * dpr));
+      c.height = Math.max(1, Math.round(winH * dpr));
+      c.style.width = w + "px";
+      c.style.height = winH + "px";
+      c.style.top = top + "px";
+    });
+    // content coordinates in, window pixels out
+    inkCtx.setTransform(dpr, 0, 0, dpr, 0, -top * dpr);
+    highlightCtx.setTransform(dpr, 0, 0, dpr, 0, -top * dpr);
+    return true;
   }
 
   function resizeInkCanvas(){
-    if(!inkCanvas || !highlightCanvas) return;
-    const w = readInner.clientWidth;
-    const h = readInner.scrollHeight;
-    const scale = inkBackingScale(w, h);
-    [inkCanvas, highlightCanvas].forEach(c=>{
-      c.width = Math.max(1, Math.round(w*scale));
-      c.height = Math.max(1, Math.round(h*scale));
-      c.style.width = w+"px";
-      c.style.height = h+"px";
-    });
-    inkCtx.setTransform(scale,0,0,scale,0,0);
-    highlightCtx.setTransform(scale,0,0,scale,0,0);
-    redrawInk();
+    if(layoutInkWindow(true)) redrawInk();
+  }
+  // Scrolling only costs anything on the rare frame that leaves the margin.
+  function syncInkWindow(){
+    if(inkDrawing) return;            // never move the surface mid-stroke
+    if(layoutInkWindow(false)) redrawInk();
   }
 
   function ctxForTool(tool){ return tool==="highlighter" ? highlightCtx : inkCtx; }
@@ -3455,29 +3486,103 @@
     ctx.lineTo(last[0]*w, last[1]*h);
   }
 
-  function paintStroke(stroke, w, h){
-    if(stroke.points.length < 1) return;
-    const ctx = ctxForTool(stroke.tool);
-    ctx.save();
-    applyStrokeStyle(ctx, stroke.tool, stroke.color, stroke.width);
-    ctx.beginPath();
-    tracePath(ctx, stroke.points, w, h);
-    ctx.stroke();
-    ctx.restore();
+  // Cached per stroke so a chapter with hundreds of them only pays for the
+  // handful actually on screen.
+  function boundsOf(stroke){
+    let b = strokeBounds.get(stroke);
+    if(b) return b;
+    let y0 = Infinity, y1 = -Infinity;
+    for(const p of stroke.points || []){
+      if(p[1] < y0) y0 = p[1];
+      if(p[1] > y1) y1 = p[1];
+    }
+    b = { y0, y1 };
+    strokeBounds.set(stroke, b);
+    return b;
+  }
+  function strokeInWindow(stroke, h){
+    const b = boundsOf(stroke);
+    if(b.y0 === Infinity) return false;
+    const pad = (stroke.width || 8) + 4;
+    return b.y1 * h + pad >= inkWinTop && b.y0 * h - pad <= inkWinTop + inkWinH;
+  }
+
+  function paintStroke(stroke, w, h, only){
+    if(!stroke.points || stroke.points.length < 1) return;
+    // An eraser has to reach the highlighter too — it used to be applied
+    // only to the pen layer, so marker strokes simply could not be rubbed
+    // out. Replayed in order on each layer, so it erases exactly what was
+    // laid down before it.
+    let targets = stroke.tool === "eraser" ? [inkCtx, highlightCtx] : [ctxForTool(stroke.tool)];
+    if(only) targets = targets.filter(c=> c === only);
+    for(const ctx of targets){
+      ctx.save();
+      applyStrokeStyle(ctx, stroke.tool, stroke.color, stroke.width);
+      ctx.beginPath();
+      tracePath(ctx, stroke.points, w, h);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // clear in device pixels: the contexts carry the window's translate, so
+  // clearing in content coordinates would miss part of the surface
+  function clearInkSurfaces(){
+    [inkCtx, highlightCtx].forEach(ctx=>{
+      ctx.save();
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+      ctx.restore();
+    });
   }
 
   function redrawInk(){
     if(!inkCtx || !highlightCtx) return;
-    const w = readInner.clientWidth, h = readInner.scrollHeight;
-    inkCtx.clearRect(0,0,w,h);
-    highlightCtx.clearRect(0,0,w,h);
-    inkStrokes.forEach(s=> paintStroke(s, w, h));
+    const { w, h } = inkContentSize();
+    clearInkSurfaces();
+    for(const s of inkStrokes){
+      if(strokeInWindow(s, h)) paintStroke(s, w, h);
+    }
+    if(inkDrawing) paintStroke(inkDrawing, w, h);
   }
 
   function pointerToNorm(e){
-    const w = readInner.clientWidth, h = readInner.scrollHeight;
+    const { w, h } = inkContentSize();
     const rect = inkCanvas.getBoundingClientRect();
-    return [ (e.clientX-rect.left)/w, (e.clientY-rect.top)/h ];
+    // rect.top is the window's top edge on screen, i.e. content y
+    // inkWinTop — so the offset within the canvas has to be added back on
+    return [ (e.clientX-rect.left)/w, (inkWinTop + (e.clientY-rect.top))/h ];
+  }
+
+  // Sub-pixel duplicates add nothing to how a stroke looks and a great deal
+  // to what has to be stored and synced, so a sample has to actually move.
+  const INK_MIN_STEP = 0.7;
+  function appendInkPoint(ev, w, h){
+    const pt = pointerToNorm(ev);
+    const pts = inkDrawing.points;
+    const prev = pts[pts.length-1];
+    const dx = (pt[0]-prev[0])*w, dy = (pt[1]-prev[1])*h;
+    if(dx*dx + dy*dy < INK_MIN_STEP*INK_MIN_STEP) return null;
+    pts.push(pt);
+    return prev;
+  }
+
+  let highlightPreviewRaf = 0;
+  function scheduleHighlightPreview(){
+    if(highlightPreviewRaf) return;
+    highlightPreviewRaf = requestAnimationFrame(()=>{
+      highlightPreviewRaf = 0;
+      if(!highlightCtx) return;
+      const { w, h } = inkContentSize();
+      highlightCtx.save();
+      highlightCtx.setTransform(1,0,0,1,0,0);
+      highlightCtx.clearRect(0,0,highlightCtx.canvas.width, highlightCtx.canvas.height);
+      highlightCtx.restore();
+      for(const st of inkStrokes){
+        if((st.tool === "highlighter" || st.tool === "eraser") && strokeInWindow(st, h)) paintStroke(st, w, h, highlightCtx);
+      }
+      if(inkDrawing && inkDrawing.tool === "highlighter") paintStroke(inkDrawing, w, h, highlightCtx);
+    });
   }
 
   function strokeWidthFor(e, toolOverride){
@@ -3565,26 +3670,15 @@
     else if(inkMultiTouchActive){ inkPanLastCentroidY = inkTouchCentroidY(); } // avoid a jump when the touch count changes
   }
 
-  // TEMPORARY diagnostic — Pointer Events' button-bit convention for a
-  // stylus barrel button is inconsistent across Android/Samsung builds (and
-  // some intercept the S Pen button for a system "Air command" gesture
-  // before it ever reaches the page), so guessing further isn't productive.
-  // This surfaces the real button/buttons values live so detection can be
-  // corrected against actual device data. Remove once that's confirmed.
-  let inkDebugLines = [];
-  function inkDebugLog(msg){
-    const line = new Date().toISOString().slice(11,19) + " " + msg;
-    inkDebugLines.push(line);
-    if(inkDebugLines.length > 10) inkDebugLines = inkDebugLines.slice(-10);
-    let box = document.getElementById("inkDebugBox");
-    if(!box){
-      box = document.createElement("div");
-      box.id = "inkDebugBox";
-      box.style.cssText = "position:fixed; bottom:8px; left:8px; right:8px; max-height:150px; overflow-y:auto; background:rgba(20,18,16,.88); color:#8f8; font-family:'SFMono-Regular',Consolas,monospace; font-size:10.5px; line-height:1.5; padding:8px 10px; border-radius:8px; z-index:99999; white-space:pre-wrap; pointer-events:none;";
-      document.body.appendChild(box);
-    }
-    box.textContent = inkDebugLines.join("\n");
-  }
+  // Pointer Events' button-bit convention for a stylus barrel button is
+  // inconsistent across Android/Samsung builds (and some intercept the
+  // S Pen button for a system gesture before it reaches the page), so
+  // these values stay worth having when something misbehaves. They go to
+  // the console only now: this used to paint a black diagnostic panel
+  // across the bottom of the screen, and it shipped — so every S Pen user
+  // got a debug console over their book the moment the pen touched down.
+  function inkDebugLog(msg){ console.log("[ink]", msg); }
+
   // Stylus side/barrel button switches to eraser while held — Samsung S Pen
   // and most active styluses report this via Pointer Events, but which bit
   // isn't fully consistent across Android/Samsung builds: the W3C
@@ -3614,6 +3708,7 @@
       }
       if(e.pointerType==="pen"){ inkActiveStylusId = e.pointerId; inkLastPenActivityTs = Date.now(); }
       e.preventDefault();
+      if(layoutInkWindow(false)) redrawInk();
       const barrelHeld = isBarrelHeld(e);
       if(e.pointerType==="pen") inkDebugLog("pen down: button="+e.button+" buttons="+e.buttons+" barrelHeld="+barrelHeld);
       const tool = barrelHeld ? "eraser" : inkTool;
@@ -3663,18 +3758,37 @@
       updateInkCursor(e, strokeWidthFor(e, tool), tool);
       if(!inkDrawing || e.pointerId !== inkActivePointerId) return;
       e.preventDefault();
-      const w = readInner.clientWidth, h = readInner.scrollHeight;
-      const pt = pointerToNorm(e);
-      const prev = inkDrawing.points[inkDrawing.points.length-1];
-      inkDrawing.points.push(pt);
-      const ctx = ctxForTool(inkDrawing.tool);
-      ctx.save();
-      applyStrokeStyle(ctx, inkDrawing.tool, inkDrawing.color, inkDrawing.width);
-      ctx.beginPath();
-      ctx.moveTo(prev[0]*w, prev[1]*h);
-      ctx.lineTo(pt[0]*w, pt[1]*h);
-      ctx.stroke();
-      ctx.restore();
+      const { w, h } = inkContentSize();
+      // A stylus samples far faster than the display refreshes and the
+      // browser merges those samples into one move event; asking for the
+      // coalesced list back recovers the parts of the stroke that were
+      // being thrown away, which is most of the detail in a fast flick.
+      const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
+      const samples = (coalesced && coalesced.length) ? coalesced : [e];
+      const isHighlighter = inkDrawing.tool === "highlighter";
+      const targets = inkDrawing.tool === "eraser" ? [inkCtx, highlightCtx] : [ctxForTool(inkDrawing.tool)];
+      let moved = false;
+      for(const ev of samples){
+        const prev = appendInkPoint(ev, w, h);
+        if(!prev) continue;
+        moved = true;
+        if(isHighlighter) continue; // repainted as one path below
+        const pt = inkDrawing.points[inkDrawing.points.length-1];
+        for(const ctx of targets){
+          ctx.save();
+          applyStrokeStyle(ctx, inkDrawing.tool, inkDrawing.color, inkDrawing.width);
+          ctx.beginPath();
+          ctx.moveTo(prev[0]*w, prev[1]*h);
+          ctx.lineTo(pt[0]*w, pt[1]*h);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+      // A translucent marker drawn segment by segment doubles up at every
+      // joint, so the live stroke read as a string of dark blobs until you
+      // lifted the pen and it snapped to an even band. Repaint the whole
+      // layer as one path instead.
+      if(isHighlighter && moved) scheduleHighlightPreview();
     });
     const endStroke = (e)=>{
       if(e && e.pointerType==="touch") endInkTouch(e.pointerId);
@@ -3684,8 +3798,10 @@
       }
       if(e && e.pointerType==="pen" && e.pointerId===inkActiveStylusId) inkActiveStylusId = null;
       if(!inkDrawing || (e && e.pointerId!==undefined && e.pointerId!==inkActivePointerId)) return;
-      if(inkDrawing.points.length>1){
-        inkStrokes.push(inkDrawing);
+      const finished = inkDrawing;
+      inkDrawing = null;
+      if(finished.points.length>1){
+        inkStrokes.push(finished);
         inkRedoStack = [];
         saveInkForChapter();
         updateInkUndoButtons();
@@ -3693,7 +3809,6 @@
         // redraw now so the committed stroke gets the smoothed curve treatment
         redrawInk();
       }
-      inkDrawing = null;
       inkActivePointerId = null;
     };
     inkCanvas.addEventListener("pointerup", endStroke);
@@ -3794,7 +3909,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "45";
+  const SW_VERSION = "46";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
