@@ -488,6 +488,37 @@
   }
   mark.search-hit{color:inherit; background:rgba(201,122,69,.35);}
 
+  mark.hl{
+    background:color-mix(in srgb, var(--hl) 55%, transparent);
+    color:inherit; border-radius:2px; padding:0 1px; cursor:pointer;
+  }
+  @supports not (background: color-mix(in srgb, red 50%, transparent)){
+    mark.hl{background:var(--hl); opacity:.75;}
+  }
+  .hl-bar{
+    position:fixed; z-index:65; display:flex; align-items:center; gap:6px;
+    background:var(--toast-bg); border-radius:999px; padding:6px 8px;
+    box-shadow:var(--shadow-lg);
+  }
+  .hl-swatch{
+    width:24px; height:24px; border-radius:50%; border:none; background:var(--sw); padding:0; flex:0 0 auto;
+  }
+  .hl-act{
+    background:transparent; border:none; color:var(--toast-text); font-family:inherit;
+    font-size:12.5px; font-weight:600; padding:4px 8px; border-radius:999px;
+  }
+  .hl-act.danger{color:#F2A69C;}
+  .hl-act:active{background:rgba(255,255,255,.14);}
+
+  .hl-index{width:min(460px, 92vw);}
+  .hl-index-body{max-height:min(60vh, 460px); overflow-y:auto; margin-bottom:16px;}
+  .hl-index-empty{margin:0; font-size:13px; color:var(--text-500); line-height:1.6;}
+  .hl-quote{
+    font-size:13px; line-height:1.6; color:var(--text-900);
+    border-left:3px solid var(--hl); padding-left:9px;
+    display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;
+  }
+
   .menu-sub-label{font-size:10.5px; color:var(--text-400); padding:8px 12px 4px; text-transform:uppercase; letter-spacing:.08em; font-weight:600;}
 
   .modal{
@@ -1720,6 +1751,18 @@
       try{ await S.setJSON("assets:"+f.id, JSON.parse(gotAssets.text)); }catch(e){}
     }
   }
+  async function pushHlToCloud(uid, f, idx, ts){
+    const hl = await S.getJSON("hl:"+f.id+":"+idx, []);
+    await writeChunked(uid, "hl", f.id+"_"+idx, JSON.stringify(hl || []), { updatedAt: ts });
+  }
+  async function pullHlFromCloud(uid, f, idx){
+    const got = await readChunked(uid, "hl", f.id+"_"+idx);
+    if(!got || got.text == null) throw new Error("하이라이트 없음");
+    let list = [];
+    try{ list = JSON.parse(got.text) || []; }catch(e){ list = []; }
+    await S.setJSON("hl:"+f.id+":"+idx, list);
+    return list.length;
+  }
   async function pushInkToCloud(uid, f, idx, ts){
     const strokes = await S.getJSON("ink:"+f.id+":"+idx, []);
     await writeChunked(uid, "ink", f.id+"_"+idx, encodeStrokes(strokes), { updatedAt: ts });
@@ -1739,6 +1782,7 @@
       await deleteChunked(uid, "assets", f.id);
       const chapters = new Set([...(f.inkChapters||[]), ...Object.keys(inkTsMap(f)).map(Number)]);
       for(const idx of chapters) await deleteChunked(uid, "ink", f.id+"_"+idx);
+      for(const idx of Object.keys(hlTsMap(f))) await deleteChunked(uid, "hl", f.id+"_"+idx);
       const delRef = doc(fb.db, "users", uid, "library", "deleted");
       const snap = await getDoc(delRef);
       const data = snap.exists() ? snap.data() : {};
@@ -1807,9 +1851,10 @@
       const cloudById = new Map(cloudFiles.map(f=>[f.id, f]));
       const allIds = new Set([...localById.keys(), ...cloudById.keys()]);
 
-      const pullContent = [], pushContent = [], pullInk = [], pushInk = [];
+      const pullContent = [], pushContent = [], pullInk = [], pushInk = [], pullHl = [], pushHl = [];
       const cloudContentTs = {};  // id -> newest body timestamp the cloud holds
       const cloudInkTs = {};      // id -> { chapterIdx: newest ink timestamp the cloud holds }
+      const cloudHlTs = {};       // the same, for text highlights
       const mergedFiles = [];
       const purged = [];
 
@@ -1856,6 +1901,19 @@
         rec.inkTs = localInk;
         cloudInkTs[id] = cloudInk;
 
+        const lHl = l ? hlTsMap(l) : {}, cHl = c ? hlTsMap(c) : {};
+        const hlChapters = new Set([...Object.keys(lHl), ...Object.keys(cHl)]);
+        const localHl = {}, cloudHl = {};
+        for(const k of hlChapters){
+          const lt = lHl[k]||0, ct = cHl[k]||0;
+          localHl[k] = lt;
+          cloudHl[k] = ct;
+          if(ct > lt) pullHl.push({ rec, idx:+k, ts:ct });
+          else if(lt > ct) pushHl.push({ rec, idx:+k, ts:lt });
+        }
+        rec.hlTs = localHl;
+        cloudHlTs[id] = cloudHl;
+
         mergedFiles.push(rec);
       }
 
@@ -1872,6 +1930,7 @@
         await S.del("file-content:"+f.id);
         await S.del("assets:"+f.id);
         for(const idx of Object.keys(inkTsMap(f))) await S.del("ink:"+f.id+":"+idx);
+        for(const idx of Object.keys(hlTsMap(f))) await S.del("hl:"+f.id+":"+idx);
       }
 
       // Every transfer is isolated. One book too large for a document, or a
@@ -1906,6 +1965,21 @@
           if(cloudInkTs[job.rec.id]) cloudInkTs[job.rec.id][job.idx] = job.ts;
         }catch(e){ failures++; firstFailure = firstFailure || e; console.warn("ink push failed", job.rec.id, job.idx, e); }
       }
+      for(const job of pullHl){
+        try{
+          const n = await pullHlFromCloud(uid, job.rec, job.idx);
+          job.rec.hlTs[job.idx] = job.ts;
+          const set = new Set(job.rec.hlChapters || []);
+          if(n > 0) set.add(job.idx); else set.delete(job.idx);
+          job.rec.hlChapters = Array.from(set).sort((a,b)=>a-b);
+        }catch(e){ failures++; firstFailure = firstFailure || e; console.warn("highlight pull failed", job.rec.id, job.idx, e); }
+      }
+      for(const job of pushHl){
+        try{
+          await pushHlToCloud(uid, job.rec, job.idx, job.ts);
+          if(cloudHlTs[job.rec.id]) cloudHlTs[job.rec.id][job.idx] = job.ts;
+        }catch(e){ failures++; firstFailure = firstFailure || e; console.warn("highlight push failed", job.rec.id, job.idx, e); }
+      }
 
       // `files` *is* mergedFiles, so anything created while the transfers
       // ran is already in the payload — but its body has not been uploaded,
@@ -1924,6 +1998,7 @@
       const payloadFiles = mergedFiles.map(f=> Object.assign({}, f, {
         contentTs: cloudContentTs[f.id] || 0,
         inkTs: cloudInkTs[f.id] || {},
+        hlTs: cloudHlTs[f.id] || {},
       }));
       const payload = { folders: mergedFolders, files: payloadFiles };
 
@@ -2763,7 +2838,7 @@
   }
 
   async function buildBackup(){
-    const content = {}, assets = {}, ink = {};
+    const content = {}, assets = {}, ink = {}, hl = {};
     for(const f of files){
       const t = await S.getText("file-content:"+f.id);
       if(t != null) content[f.id] = t;
@@ -2773,12 +2848,16 @@
         const strokes = await S.getJSON("ink:"+f.id+":"+idx, null);
         if(strokes && strokes.length) ink[f.id+":"+idx] = strokes;
       }
+      for(const idx of Object.keys(hlTsMap(f))){
+        const list = await S.getJSON("hl:"+f.id+":"+idx, null);
+        if(list && list.length) hl[f.id+":"+idx] = list;
+      }
     }
     return {
       app: "study-shelf", version: 1, exportedAt: Date.now(),
       folders, files,
       prefs: { sortMode, density, customBg, customText, readLine, readFamily },
-      content, assets, ink,
+      content, assets, ink, hl,
     };
   }
 
@@ -2829,6 +2908,11 @@
       const target = files.find(f=> f.id === fid);
       if(target) await S.setJSON("ink:"+fid+":"+idx, data.ink[key]);
     }
+    for(const key of Object.keys(data.hl || {})){
+      const [fid, idx] = key.split(":");
+      const target = files.find(f=> f.id === fid);
+      if(target) await S.setJSON("hl:"+fid+":"+idx, data.hl[key]);
+    }
     if(data.prefs){
       readLine = Number(data.prefs.readLine) || readLine;
       readFamily = data.prefs.readFamily === "sans" ? "sans" : readFamily;
@@ -2844,6 +2928,64 @@
     toast(added + "권을 새로 가져오고 " + updated + "권을 갱신했어요");
   }
 
+  /* ---------------- everything you marked, in one place ---------------
+     Marking a passage is only half of studying; the other half is finding it
+     again a week later, which until now meant remembering which book it was
+     in and paging through. */
+  async function collectHighlights(){
+    const out = [];
+    for(const f of files){
+      for(const idx of Object.keys(hlTsMap(f))){
+        const list = await S.getJSON("hl:"+f.id+":"+idx, null);
+        if(!list || !list.length) continue;
+        let chapterTitle = "챕터 " + (Number(idx) + 1);
+        const text = await contentFor(f);
+        const chunks = chapterChunks(text, f.title);
+        if(chunks[idx]) chapterTitle = chunks[idx].title;
+        for(const h of list) out.push({ file: f, chapterIdx: Number(idx), chapterTitle, hl: h });
+      }
+    }
+    out.sort((a,b)=> (b.hl.ts||0) - (a.hl.ts||0));
+    return out;
+  }
+
+  async function openHighlightIndex(){
+    closeAllOverlays();
+    $("overlay").classList.add("show");
+    const modal = document.createElement("div");
+    modal.className = "modal hl-index";
+    modal.innerHTML = '<h4>모아본 하이라이트</h4><div class="hl-index-body">불러오는 중…</div>' +
+      '<div class="modal-actions"><button class="btn btn-ghost" id="closeHlIndex">닫기</button></div>';
+    $("modalLayer").appendChild(modal);
+    $("closeHlIndex").addEventListener("click", closeAllOverlays);
+
+    const items = await collectHighlights();
+    const body = modal.querySelector(".hl-index-body");
+    body.innerHTML = "";
+    if(!items.length){
+      body.innerHTML = '<p class="hl-index-empty">아직 표시한 문장이 없어요. 읽는 중에 문장을 길게 눌러 선택하면 형광펜을 칠할 수 있어요.</p>';
+      return;
+    }
+    for(const it of items){
+      const row = document.createElement("button");
+      row.className = "hit-row";
+      const where = document.createElement("div");
+      where.className = "hit-where";
+      where.textContent = it.file.title + " › " + it.chapterTitle;
+      const quote = document.createElement("div");
+      quote.className = "hl-quote";
+      quote.style.setProperty("--hl", hlColorCss(it.hl.color));
+      quote.textContent = it.hl.text || "";
+      row.appendChild(where);
+      row.appendChild(quote);
+      row.addEventListener("click", ()=>{
+        closeAllOverlays();
+        openBook(it.file.id, it.chapterIdx);
+      });
+      body.appendChild(row);
+    }
+  }
+
   /* ---------------- library "more" menu ---------------- */
   $("restoreInput").addEventListener("change", (e)=>{
     const file = e.target.files && e.target.files[0];
@@ -2857,12 +2999,15 @@
     const menu = document.createElement("div");
     menu.className = "menu-pop";
     menu.innerHTML =
-      '<div class="menu-sub-label">백업</div>'+
       '<button class="menu-item" id="backupBtn"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>전체 백업 저장</button>'+
+      '<button class="menu-item" id="hlIndexBtn"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h10M4 18h7"/><path d="m15.5 17.5 2 2 4-4"/></svg>하이라이트 모아보기</button>'+
+      '<div class="menu-divider"></div>'+
+      '<div class="menu-sub-label">백업</div>'+
       '<button class="menu-item" id="restoreBtn"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M4 7V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2"/></svg>백업에서 복원</button>';
     document.body.appendChild(menu);
     placeMenu(menu, anchor);
     $("overlay").classList.add("show");
+    $("hlIndexBtn").addEventListener("click", ()=>{ closeAllOverlays(); openHighlightIndex(); });
     $("backupBtn").addEventListener("click", ()=>{ closeAllOverlays(); exportBackup(); });
     $("restoreBtn").addEventListener("click", ()=>{ closeAllOverlays(); $("restoreInput").click(); });
   });
@@ -2982,6 +3127,7 @@
       await S.del("file-content:"+f.id);
       await S.del("assets:"+f.id);
       for(const idx of Object.keys(inkTsMap(f))) await S.del("ink:"+f.id+":"+idx);
+      for(const idx of Object.keys(hlTsMap(f))) await S.del("hl:"+f.id+":"+idx);
       if(fb && fb.currentUser){
         try{ await deleteFileFromCloud(fb.currentUser.uid, f); }
         finally{ pendingDeletes.delete(f.id); }
@@ -3652,6 +3798,7 @@
     readInner.innerHTML = activeChapters[chapterIdx].html;
     wrapWideTables(readInner);
     readInner.querySelectorAll("pre code").forEach(block=>{ try{ hljs.highlightElement(block); }catch(e){} });
+    paintHighlights();
     const firstHit = pendingSearchTerm ? highlightInChapter(pendingSearchTerm) : null;
     // .read-scroll has scroll-behavior:smooth (for deliberate jumps like
     // this one, in principle) but the content was just replaced wholesale —
@@ -3677,6 +3824,8 @@
     Array.from(tocList.children).forEach((el,i)=> el.classList.toggle("active", i===chapterIdx));
     updateProgress();
     saveProgress();
+    await loadHighlightsForChapter();
+    if(highlights.length) paintHighlights();
     await loadInkForChapter();
     setupInkCanvas();
     settleChapterMedia(startFrac, readScroll.scrollTop);
@@ -4133,6 +4282,206 @@
     theme = "custom";
     applyTheme();
     scheduleCustomThemeSave();
+  });
+
+  /* ---------------- text highlights -------------------------------------
+     Freehand marker was the only way to emphasise anything, which means
+     drawing a straight line over a sentence by hand and living with the
+     wobble. Selecting the words instead is both exact and, unlike a stroke,
+     something the app can list back to you afterwards.
+
+     A highlight is anchored the way ink is — to the block it sits in — but
+     by character offsets within that block's text rather than by position,
+     so it survives a reflow exactly rather than approximately. */
+  const HL_COLORS = [
+    { key: "y", css: "#F4C84A", label: "노랑" },
+    { key: "g", css: "#8FCB8A", label: "초록" },
+    { key: "b", css: "#9CC7E8", label: "파랑" },
+    { key: "p", css: "#EE9DBB", label: "분홍" },
+  ];
+  const hlColorCss = (key)=> (HL_COLORS.find(c=> c.key === key) || HL_COLORS[0]).css;
+
+  let highlights = [];        // the open chapter's, in document order
+  let hlBarEl = null;
+  let hlSelTimer = null;
+
+  function hlKey(fileId, idx){ return "hl:" + fileId + ":" + idx; }
+  function hlTsMap(f){
+    return (f && f.hlTs && typeof f.hlTs === "object") ? f.hlTs : {};
+  }
+
+  async function loadHighlightsForChapter(){
+    highlights = activeFile ? await S.getJSON(hlKey(activeFile.id, chapterIdx), []) : [];
+    if(!Array.isArray(highlights)) highlights = [];
+  }
+  async function saveHighlights(){
+    if(!activeFile) return;
+    const idx = chapterIdx;
+    await S.setJSON(hlKey(activeFile.id, idx), highlights);
+    const chapters = new Set(activeFile.hlChapters || []);
+    if(highlights.length) chapters.add(idx); else chapters.delete(idx);
+    activeFile.hlChapters = Array.from(chapters).sort((a,b)=>a-b);
+    activeFile.hlTs = Object.assign({}, hlTsMap(activeFile));
+    activeFile.hlTs[idx] = Date.now();
+    await persistFiles();
+  }
+
+  function readerBlocks(){
+    return Array.from(readInner.children).filter(el=> !(el.classList && el.classList.contains("ink-canvas")));
+  }
+
+  // Offsets inside one block's text, per block the selection touches — a
+  // selection that runs across a paragraph break becomes one highlight per
+  // paragraph rather than being refused.
+  function selectionSpans(){
+    const sel = window.getSelection();
+    if(!sel || sel.isCollapsed || !sel.rangeCount) return [];
+    const range = sel.getRangeAt(0);
+    if(!readInner.contains(range.commonAncestorContainer)) return [];
+    const spans = [];
+    readerBlocks().forEach((block, bi)=>{
+      if(!range.intersectsNode(block)) return;
+      const whole = document.createRange();
+      whole.selectNodeContents(block);
+      let start = 0, end = block.textContent.length;
+      if(block.contains(range.startContainer)){
+        const pre = document.createRange();
+        pre.selectNodeContents(block);
+        pre.setEnd(range.startContainer, range.startOffset);
+        start = pre.toString().length;
+      }
+      if(block.contains(range.endContainer)){
+        const pre = document.createRange();
+        pre.selectNodeContents(block);
+        pre.setEnd(range.endContainer, range.endOffset);
+        end = pre.toString().length;
+      }
+      if(end > start) spans.push({ block: bi, start, end, text: block.textContent.slice(start, end) });
+    });
+    return spans;
+  }
+
+  function wrapOffsets(block, start, end, cls, data){
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    const jobs = [];
+    let pos = 0, node;
+    while((node = walker.nextNode())){
+      const len = node.nodeValue.length;
+      const s = Math.max(start, pos), e = Math.min(end, pos + len);
+      if(s < e) jobs.push({ node, from: s - pos, to: e - pos });
+      pos += len;
+      if(pos >= end) break;
+    }
+    for(const j of jobs){
+      const v = j.node.nodeValue;
+      const frag = document.createDocumentFragment();
+      if(j.from > 0) frag.appendChild(document.createTextNode(v.slice(0, j.from)));
+      const mark = document.createElement("mark");
+      mark.className = cls;
+      Object.keys(data || {}).forEach(k=> mark.dataset[k] = data[k]);
+      if(data && data.color) mark.style.setProperty("--hl", hlColorCss(data.color));
+      mark.textContent = v.slice(j.from, j.to);
+      frag.appendChild(mark);
+      if(j.to < v.length) frag.appendChild(document.createTextNode(v.slice(j.to)));
+      j.node.parentNode.replaceChild(frag, j.node);
+    }
+  }
+
+  function paintHighlights(){
+    const blocks = readerBlocks();
+    for(const h of highlights){
+      const block = blocks[h.block];
+      if(!block) continue;
+      wrapOffsets(block, h.start, h.end, "hl", { hl: h.id, color: h.color });
+    }
+  }
+
+  /* ---- the little bar that appears over a selection ---- */
+  function closeHlBar(){
+    if(hlBarEl){ hlBarEl.remove(); hlBarEl = null; }
+  }
+  function showHlBar(rect, opts){
+    closeHlBar();
+    const bar = document.createElement("div");
+    bar.className = "hl-bar";
+    let html = "";
+    if(opts.colors){
+      html += HL_COLORS.map(c=>
+        '<button class="hl-swatch" data-color="'+c.key+'" style="--sw:'+c.css+'" aria-label="'+c.label+' 형광펜"></button>').join("");
+      html += '<button class="hl-act" data-act="copy">복사</button>';
+    }
+    if(opts.remove) html += '<button class="hl-act danger" data-act="remove">지우기</button>';
+    bar.innerHTML = html;
+    document.body.appendChild(bar);
+    const w = bar.offsetWidth, h = bar.offsetHeight;
+    let left = rect.left + rect.width / 2 - w / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+    let top = rect.top - h - 10;
+    if(top < 8) top = Math.min(rect.bottom + 10, window.innerHeight - h - 8);
+    bar.style.left = left + "px";
+    bar.style.top = top + "px";
+    hlBarEl = bar;
+    bar.addEventListener("pointerdown", (e)=> e.preventDefault());   // keep the selection alive
+    bar.querySelectorAll("[data-color]").forEach(b=>{
+      b.addEventListener("click", ()=> addHighlight(b.dataset.color));
+    });
+    const copyBtn = bar.querySelector('[data-act="copy"]');
+    if(copyBtn) copyBtn.addEventListener("click", ()=>{
+      const text = String(window.getSelection() || "");
+      closeHlBar();
+      if(!text) return;
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(()=> toast("복사했어요"), ()=> toast("복사하지 못했어요"));
+      }
+    });
+    const rmBtn = bar.querySelector('[data-act="remove"]');
+    if(rmBtn) rmBtn.addEventListener("click", ()=> removeHighlight(opts.remove));
+  }
+
+  async function addHighlight(color){
+    const spans = selectionSpans();
+    closeHlBar();
+    if(!spans.length) return;
+    const stamp = Date.now();
+    spans.forEach((sp, i)=>{
+      highlights.push({ id: genId() + i, block: sp.block, start: sp.start, end: sp.end,
+                        color, text: sp.text, ts: stamp });
+    });
+    highlights.sort((a,b)=> a.block - b.block || a.start - b.start);
+    const sel = window.getSelection();
+    if(sel) sel.removeAllRanges();
+    await saveHighlights();
+    await renderChapter(chapterIdx, false);
+  }
+  async function removeHighlight(id){
+    closeHlBar();
+    highlights = highlights.filter(h=> h.id !== id);
+    await saveHighlights();
+    await renderChapter(chapterIdx, false);
+  }
+
+  document.addEventListener("selectionchange", ()=>{
+    if(!readerScreenVisible() || penMode) return;
+    clearTimeout(hlSelTimer);
+    hlSelTimer = setTimeout(()=>{
+      const sel = window.getSelection();
+      if(!sel || sel.isCollapsed || !sel.rangeCount || !readInner.contains(sel.getRangeAt(0).commonAncestorContainer)){
+        if(hlBarEl && !hlBarEl.dataset.pinned) closeHlBar();
+        return;
+      }
+      const rect = sel.getRangeAt(0).getBoundingClientRect();
+      if(!rect || (!rect.width && !rect.height)) return;
+      showHlBar(rect, { colors: true });
+    }, 180);
+  });
+  // tapping an existing highlight offers to take it off again
+  readInner.addEventListener("click", (e)=>{
+    if(penMode || !readerScreenVisible()) return;
+    const mark = e.target && e.target.closest && e.target.closest("mark.hl");
+    if(!mark) return;
+    e.stopPropagation();
+    showHlBar(mark.getBoundingClientRect(), { remove: mark.dataset.hl });
+    if(hlBarEl) hlBarEl.dataset.pinned = "1";
   });
 
   /* ---------------- ink (handwriting) layer ----------------
@@ -4832,7 +5181,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "52";
+  const SW_VERSION = "53";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
