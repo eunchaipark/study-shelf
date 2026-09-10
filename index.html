@@ -461,6 +461,33 @@
   @media (hover:hover) and (pointer:fine){ .menu-item:hover{background:var(--bg-sunken);} }
   .menu-item.danger{color:var(--danger);}
   .menu-divider{height:1px; background:var(--line); margin:5px 4px;}
+  /* body-search results, listed under the title matches */
+  .search-section-label{
+    font-size:11px; font-weight:600; color:var(--text-400); text-transform:uppercase;
+    letter-spacing:.08em; margin:22px 0 8px;
+  }
+  .hit-list{display:flex; flex-direction:column; gap:2px;}
+  .hit-row{
+    display:block; width:100%; text-align:left; background:transparent; border:none;
+    border-radius:var(--r-sm); padding:10px 10px; color:inherit;
+    transition:background-color .12s var(--ease);
+  }
+  .hit-row:active{background:var(--bg-sunken);}
+  @media (hover:hover) and (pointer:fine){ .hit-row:hover{background:var(--bg-sunken);} }
+  .hit-where{
+    font-size:11.5px; font-weight:600; color:var(--accent-500); margin-bottom:3px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .hit-snippet{
+    font-size:12.5px; line-height:1.6; color:var(--text-500);
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+  }
+  .hit-snippet mark, mark.search-hit{
+    background:var(--accent-wash); color:var(--accent-500); font-weight:600;
+    border-radius:3px; padding:0 1px;
+  }
+  mark.search-hit{color:inherit; background:rgba(201,122,69,.35);}
+
   .menu-sub-label{font-size:10.5px; color:var(--text-400); padding:8px 12px 4px; text-transform:uppercase; letter-spacing:.08em; font-weight:600;}
 
   .modal{
@@ -2176,7 +2203,9 @@
       note.className = "rail-crumbs";
       const label = document.createElement("button");
       label.className = "crumb-item active";
-      label.textContent = "검색 결과 " + visibleFiles().length + "건 · 지우기 ✕";
+      // counts what is actually on screen, which is titles plus body hits
+      const found = visibleFiles().length + contentHits.length;
+      label.textContent = "검색 결과 " + found + (contentSearchBusy ? "건+ · 지우기 ✕" : "건 · 지우기 ✕");
       label.addEventListener("click", ()=>{ resetSearch(); renderAll(); });
       note.appendChild(label);
       rail.appendChild(note);
@@ -2345,13 +2374,22 @@
     list.innerHTML = "";
     if(vis.length===0){
       if(searchQuery.trim()){
+        if(contentHits.length || contentSearchBusy){
+          const note = document.createElement("div");
+          note.className = "search-section-label";
+          note.textContent = "제목에서는 못 찾았어요";
+          list.appendChild(note);
+          renderContentHits(list);
+          return;
+        }
         const empty = document.createElement("div");
         empty.className = "empty-state";
         empty.innerHTML =
           '<svg class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>'+
-          '<strong>검색 결과가 없어요</strong>'+
-          '<span>"'+escapeHtml(searchQuery.trim())+'"와 일치하는 제목을 찾지 못했어요.</span>';
+          '<strong>제목에 없어요</strong>'+
+          '<span>"'+escapeHtml(searchQuery.trim())+'"가 들어간 제목은 없어요. 본문도 함께 찾고 있어요.</span>';
         list.appendChild(empty);
+        renderContentHits(list);
         return;
       }
       const hasKids = libView==="browse" && childFolders(currentParentId()).length>0;
@@ -2410,9 +2448,175 @@
       grid.appendChild(card);
     });
     list.appendChild(grid);
+    renderContentHits(list);
   }
 
   function renderAll(){ renderFolderRail(); renderFileList(); }
+
+  /* ---------------- searching inside the books -------------------------
+     Search only ever looked at titles, which is the one thing you already
+     remember. "그 내용 어디 있었지" meant opening books one by one.
+
+     Bodies live in IndexedDB, far too slow to re-read on every keystroke, so
+     each one is cached against the timestamp of the body it came from and
+     dropped the moment that book is edited. The scan itself is cancellable:
+     a newer query abandons the one in flight rather than racing it to the
+     render. */
+  const contentCache = new Map();   // id -> { ts, text }
+  let contentHits = [];             // [{ file, chapterIdx, chapterTitle, snippet, at }]
+  let contentSearchRun = 0;
+  let contentSearchTimer = null;
+  let contentSearchBusy = false;
+  const CONTENT_HIT_LIMIT = 60;
+
+  async function contentFor(f){
+    const ts = fileContentTs(f);
+    const hit = contentCache.get(f.id);
+    if(hit && hit.ts === ts) return hit.text;
+    const text = (await S.getText("file-content:"+f.id)) || "";
+    contentCache.set(f.id, { ts, text });
+    return text;
+  }
+
+  function plainish(t){
+    return t
+      .replace(/^#{1,6}\s+/gm, "")
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/^\s*[-*+]\s+/gm, "")
+      .replace(/[*_`>|]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  function makeSnippet(text, at, len){
+    const start = Math.max(0, at - 45);
+    const end = Math.min(text.length, at + len + 70);
+    const lead = plainish(text.slice(start, at));
+    const hit = text.slice(at, at + len);
+    const tail = plainish(text.slice(at + len, end));
+    return {
+      lead: (start > 0 && lead ? "…" : "") + (lead ? lead + " " : ""),
+      hit,
+      tail: (tail ? " " + tail : "") + (end < text.length ? "…" : ""),
+    };
+  }
+
+  async function runContentSearch(q){
+    const run = ++contentSearchRun;
+    const needle = q.toLowerCase();
+    contentSearchBusy = true;
+    const out = [];
+    for(const f of files){
+      const text = await contentFor(f);
+      if(run !== contentSearchRun) return;    // superseded by a newer query
+      if(!text.toLowerCase().includes(needle)) continue;
+      const chunks = chapterChunks(text, f.title);
+      for(let ci = 0; ci < chunks.length && out.length < CONTENT_HIT_LIMIT; ci++){
+        const at = chunks[ci].text.toLowerCase().indexOf(needle);
+        if(at === -1) continue;
+        out.push({
+          file: f, chapterIdx: ci, chapterTitle: chunks[ci].title,
+          snippet: makeSnippet(chunks[ci].text, at, needle.length),
+        });
+      }
+      if(out.length >= CONTENT_HIT_LIMIT) break;
+    }
+    if(run !== contentSearchRun) return;
+    contentHits = out;
+    contentSearchBusy = false;
+    renderFileList();
+  }
+
+  function scheduleContentSearch(){
+    clearTimeout(contentSearchTimer);
+    const q = searchQuery.trim();
+    if(!q){
+      contentSearchRun++;               // cancel anything in flight
+      contentHits = [];
+      contentSearchBusy = false;
+      return;
+    }
+    contentSearchBusy = true;
+    contentSearchTimer = setTimeout(()=> runContentSearch(q), 220);
+  }
+
+  // Renders the body matches under the title matches.
+  function renderContentHits(list){
+    const q = searchQuery.trim();
+    if(!q) return;
+    if(contentSearchBusy && !contentHits.length){
+      const wait = document.createElement("div");
+      wait.className = "search-section-label";
+      wait.textContent = "본문을 찾는 중…";
+      list.appendChild(wait);
+      return;
+    }
+    if(!contentHits.length) return;
+    const label = document.createElement("div");
+    label.className = "search-section-label";
+    label.textContent = "본문에서 찾음 " + contentHits.length + (contentHits.length >= CONTENT_HIT_LIMIT ? "+" : "") + "건";
+    list.appendChild(label);
+
+    const wrap = document.createElement("div");
+    wrap.className = "hit-list";
+    for(const h of contentHits){
+      const row = document.createElement("button");
+      row.className = "hit-row";
+      const where = document.createElement("div");
+      where.className = "hit-where";
+      where.textContent = h.file.title + " › " + h.chapterTitle;
+      const snip = document.createElement("div");
+      snip.className = "hit-snippet";
+      snip.appendChild(document.createTextNode(h.snippet.lead));
+      const mark = document.createElement("mark");
+      mark.textContent = h.snippet.hit;
+      snip.appendChild(mark);
+      snip.appendChild(document.createTextNode(h.snippet.tail));
+      row.appendChild(where);
+      row.appendChild(snip);
+      row.addEventListener("click", ()=>{
+        pendingSearchTerm = q;
+        openBook(h.file.id, h.chapterIdx);
+      });
+      wrap.appendChild(row);
+    }
+    list.appendChild(wrap);
+  }
+
+  /* Carried into the reader so the word can be marked and scrolled to,
+     rather than dropping the reader at the top of a chapter and leaving the
+     finding to be done twice. */
+  let pendingSearchTerm = null;
+  function highlightInChapter(term){
+    if(!term) return null;
+    const needle = term.toLowerCase();
+    const walker = document.createTreeWalker(readInner, NodeFilter.SHOW_TEXT, {
+      acceptNode(n){
+        if(!n.nodeValue || n.nodeValue.toLowerCase().indexOf(needle) === -1) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    const nodes = [];
+    let n;
+    while((n = walker.nextNode())) nodes.push(n);
+    let first = null;
+    for(const node of nodes){
+      const text = node.nodeValue, lower = text.toLowerCase();
+      const frag = document.createDocumentFragment();
+      let i = 0, at;
+      while((at = lower.indexOf(needle, i)) !== -1){
+        if(at > i) frag.appendChild(document.createTextNode(text.slice(i, at)));
+        const mark = document.createElement("mark");
+        mark.className = "search-hit";
+        mark.textContent = text.slice(at, at + needle.length);
+        frag.appendChild(mark);
+        if(!first) first = mark;
+        i = at + needle.length;
+      }
+      if(i < text.length) frag.appendChild(document.createTextNode(text.slice(i)));
+      node.parentNode.replaceChild(frag, node);
+    }
+    return first;
+  }
 
   /* ---------------- search / sort / density controls ---------------- */
   const searchInput = $("searchInput");
@@ -2423,11 +2627,13 @@
     searchInput.value = "";
     searchClearBtn.classList.add("hidden");
     searchToggleBtn.classList.toggle("active", searchRow.classList.contains("open"));
+    scheduleContentSearch();
   }
   searchInput.addEventListener("input", ()=>{
     searchQuery = searchInput.value;
     searchClearBtn.classList.toggle("hidden", !searchQuery);
     markSearchActive(searchRow.classList.contains("open"));
+    scheduleContentSearch();
     renderAll();
   });
   searchClearBtn.addEventListener("click", ()=>{
@@ -3064,6 +3270,7 @@
           f.progress.chapterIdx = Math.max(0, chapters.length-1);
         }
         await S.setText("file-content:"+f.id, text);
+        contentCache.delete(f.id);
         if(Object.keys(usedAssets).length) await S.setJSON("assets:"+f.id, usedAssets);
         else await S.del("assets:"+f.id);
         await persistFiles();
@@ -3306,7 +3513,10 @@
       return asset ? (pre + asset + post) : m;
     });
   }
-  function splitChapters(md, fallbackTitle, assetMap){
+  // Splitting is shared with body search, which needs exactly the same
+  // chapter boundaries as the reader in order to say which chapter a hit
+  // is in.
+  function chapterChunks(md, fallbackTitle){
     const lines = md.split("\n");
     const headIdx = [];
     lines.forEach((line,i)=>{ if(/^#{1,2}\s+\S/.test(line)) headIdx.push(i); });
@@ -3326,7 +3536,11 @@
     } else {
       chunks.push({title: fallbackTitle, text: md});
     }
-    return chunks.map(c=>{
+    return chunks;
+  }
+
+  function splitChapters(md, fallbackTitle, assetMap){
+    return chapterChunks(md, fallbackTitle).map(c=>{
       const {text: mathSafeText, store} = extractMath(c.text);
       const safeText = fixAttachedEmphasis(mathSafeText);
       let html = marked.parse(safeText);
@@ -3358,7 +3572,7 @@
   let fontSize = 18;
   let theme = "light";
 
-  async function openBook(id){
+  async function openBook(id, targetChapter){
     const f = files.find(x=>x.id===id);
     if(!f) return;
     const text = await S.getText("file-content:"+id);
@@ -3392,7 +3606,8 @@
       const derived = prog.pct * activeChapters.length - (prog.chapterIdx || 0);
       if(derived > 0 && derived < 1) frac = derived;
     }
-    renderChapter(prog.chapterIdx || 0, true, frac);
+    if(typeof targetChapter === "number") renderChapter(targetChapter, true, 0);
+    else renderChapter(prog.chapterIdx || 0, true, frac);
   }
 
   // Tables come out of the markdown renderer bare; give each one its own
@@ -3437,6 +3652,7 @@
     readInner.innerHTML = activeChapters[chapterIdx].html;
     wrapWideTables(readInner);
     readInner.querySelectorAll("pre code").forEach(block=>{ try{ hljs.highlightElement(block); }catch(e){} });
+    const firstHit = pendingSearchTerm ? highlightInChapter(pendingSearchTerm) : null;
     // .read-scroll has scroll-behavior:smooth (for deliberate jumps like
     // this one, in principle) but the content was just replaced wholesale —
     // "smoothly" animating from wherever the old chapter had scrolled to
@@ -3449,6 +3665,11 @@
       // threw away a position the app had gone to the trouble of recording
       const max = Math.max(0, readScroll.scrollHeight - readScroll.clientHeight);
       readScroll.scrollTo({ top: startFrac ? Math.round(startFrac * max) : 0, behavior: "instant" });
+    }
+    if(firstHit){
+      // land on the word that was searched for, not the top of its chapter
+      firstHit.scrollIntoView({ block: "center", behavior: "instant" });
+      pendingSearchTerm = null;
     }
     chapterIndicator.textContent = (chapterIdx+1) + " / " + activeChapters.length;
     $("prevBtn").disabled = chapterIdx === 0;
@@ -4611,7 +4832,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "51";
+  const SW_VERSION = "52";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
