@@ -84,6 +84,7 @@
     --read-font-serif:'Noto Serif KR', serif;
     --read-font:'Noto Serif KR', serif;
     --read-line:1.85;
+    --turn-dur:.48s;   /* replaced at runtime from the 페이지 전환 setting */
     --read-size:18px;
 
     --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px; --sp-6:28px; --sp-7:40px;
@@ -571,7 +572,7 @@
     background:var(--toast-bg); color:var(--toast-text);
     border-radius:999px; padding:9px 16px; font-size:13px; font-weight:600;
     box-shadow:var(--shadow-lg);
-    transition:opacity .22s var(--ease), transform .26s cubic-bezier(.16,.84,.36,1);
+    transition:opacity .3s var(--ease), transform .36s cubic-bezier(.25,.55,.2,1);
   }
   .chapter-flash.show{opacity:1; transform:translate(-50%,-50%) scale(1);}
   .chapter-flash .cf-n{color:var(--accent-300); font-variant-numeric:tabular-nums; flex:0 0 auto;}
@@ -582,13 +583,23 @@
   /* Comes in from the side it was reached from and settles, rather than
      nudging: a long deceleration, and starting from fully transparent so
      there is never a frame of half-legible text sliding past. */
-  @keyframes chap-in-next{ from{opacity:0; transform:translate3d(38px,0,0);} to{opacity:1; transform:none;} }
-  @keyframes chap-in-prev{ from{opacity:0; transform:translate3d(-38px,0,0);} to{opacity:1; transform:none;} }
-  .read-inner.turn-next{animation:chap-in-next .34s cubic-bezier(.16,.84,.36,1) both; will-change:transform, opacity;}
-  .read-inner.turn-prev{animation:chap-in-prev .34s cubic-bezier(.16,.84,.36,1) both; will-change:transform, opacity;}
-  @media (prefers-reduced-motion: reduce){
-    .read-inner.turn-next, .read-inner.turn-prev{animation:none;}
+  @keyframes chap-in-next{
+    from{opacity:0; transform:translate3d(46px,0,0);}
+    55% {opacity:1;}
+    to  {opacity:1; transform:none;}
   }
+  @keyframes chap-in-prev{
+    from{opacity:0; transform:translate3d(-46px,0,0);}
+    55% {opacity:1;}
+    to  {opacity:1; transform:none;}
+  }
+  .read-inner.turn-next{animation:chap-in-next var(--turn-dur) cubic-bezier(.25,.55,.2,1) both; will-change:transform, opacity;}
+  .read-inner.turn-prev{animation:chap-in-prev var(--turn-dur) cubic-bezier(.25,.55,.2,1) both; will-change:transform, opacity;}
+  /* How a page turn should feel is a matter of taste, so it is a setting
+     rather than a number picked for everyone. The default follows the
+     system's reduced-motion preference; choosing explicitly overrides it. */
+  :root[data-turn="off"] .read-inner.turn-next,
+  :root[data-turn="off"] .read-inner.turn-prev{animation:none;}
 
   .read-scroll{flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; background:var(--read-bg, var(--bg-app)); scroll-behavior:smooth;}
   .read-inner{
@@ -1063,6 +1074,12 @@
             <button class="seg-btn serif" data-family="serif">명조</button>
             <button class="seg-btn sans" data-family="sans">고딕</button>
           </div>
+          <h5>페이지 전환</h5>
+          <div class="seg-row" id="turnRow">
+            <button class="seg-btn" data-turn="off">끄기</button>
+            <button class="seg-btn" data-turn="normal">보통</button>
+            <button class="seg-btn" data-turn="slow">느리게</button>
+          </div>
           <h5>테마</h5>
           <div class="theme-row">
             <button class="theme-swatch sw-light" data-theme-choice="light">밝게</button>
@@ -1267,6 +1284,7 @@
   let customText = "#1d1e21";
   let readLine = 1.85;        // line height and typeface are a reading habit,
   let readFamily = "serif";   // not something to re-pick per book
+  let turnMotion = "";        // "" until loaded, then off | normal | slow
 
   // IndexedDB's initial open+read is async, so a file dropped/uploaded in the
   // first instant after page load could otherwise race loadLibrary()'s
@@ -1303,11 +1321,14 @@
     customText = prefs.customText || "#1d1e21";
     readLine = Number(prefs.readLine) || 1.85;
     readFamily = prefs.readFamily === "sans" ? "sans" : "serif";
+    // never chosen: take the system's word for it
+    turnMotion = ["off","normal","slow"].includes(prefs.turnMotion) ? prefs.turnMotion
+      : ((window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) ? "off" : "normal");
     prefsUpdatedTs = prefs.updatedTs || 0;
   }
   async function persistPrefs(){
     prefsUpdatedTs = Date.now();
-    await S.setJSON("app:prefs", {sortMode, density, customBg, customText, readLine, readFamily, updatedTs: prefsUpdatedTs});
+    await S.setJSON("app:prefs", {sortMode, density, customBg, customText, readLine, readFamily, turnMotion, updatedTs: prefsUpdatedTs});
     scheduleSync();
   }
 
@@ -2079,13 +2100,14 @@
         customText = cloudPrefs.customText || customText;
         readLine = Number(cloudPrefs.readLine) || readLine;
         readFamily = cloudPrefs.readFamily === "sans" ? "sans" : (cloudPrefs.readFamily === "serif" ? "serif" : readFamily);
+        if(["off","normal","slow"].includes(cloudPrefs.turnMotion)) turnMotion = cloudPrefs.turnMotion;
         prefsUpdatedTs = cloudPrefs.updatedTs;
-        await S.setJSON("app:prefs", {sortMode, density, customBg, customText, readLine, readFamily, updatedTs: prefsUpdatedTs});
+        await S.setJSON("app:prefs", {sortMode, density, customBg, customText, readLine, readFamily, turnMotion, updatedTs: prefsUpdatedTs});
         sortSelect.value = sortMode;
         updateDensityButtons();
         applyReadStyle();
       } else if(!cloudPrefs || (cloudPrefs.updatedTs||0) < prefsUpdatedTs){
-        await setDoc(prefsRef, {sortMode, density, customBg, customText, readLine, readFamily, updatedTs: prefsUpdatedTs});
+        await setDoc(prefsRef, {sortMode, density, customBg, customText, readLine, readFamily, turnMotion, updatedTs: prefsUpdatedTs});
       }
 
       // the reader holds a direct reference to its file; if the merge
@@ -3861,7 +3883,7 @@
     el.innerHTML = html;
     el.classList.add("show");
     clearTimeout(chapterFlashTimer);
-    chapterFlashTimer = setTimeout(()=> el.classList.remove("show"), 1200);
+    chapterFlashTimer = setTimeout(()=> el.classList.remove("show"), 1700);
   }
   function announceChapter(dir){
     showChapterFlash(
@@ -3874,7 +3896,7 @@
     // reduced (the animation is switched off) — and the class carries a
     // will-change on an element as tall as the whole chapter
     clearTimeout(turnClassTimer);
-    turnClassTimer = setTimeout(()=> readInner.classList.remove("turn-next", "turn-prev"), 600);
+    turnClassTimer = setTimeout(()=> readInner.classList.remove("turn-next", "turn-prev"), 1200);
   }
   // there is nowhere further to go — say so instead of doing nothing
   readInner.addEventListener("animationend", (e)=>{
@@ -4333,7 +4355,11 @@
   $("fontMinus").addEventListener("click", ()=>{ fontSize -= 1; applyFont(); saveProgress(); });
   $("fontPlus").addEventListener("click", ()=>{ fontSize += 1; applyFont(); saveProgress(); });
 
+  const TURN_DURATION = { off: "0s", normal: "0.48s", slow: "0.8s" };
   function applyReadStyle(){
+    document.documentElement.dataset.turn = turnMotion || "normal";
+    document.documentElement.style.setProperty("--turn-dur", TURN_DURATION[turnMotion] || TURN_DURATION.normal);
+    document.querySelectorAll("#turnRow .seg-btn").forEach(b=> b.classList.toggle("active", b.dataset.turn === turnMotion));
     document.documentElement.style.setProperty("--read-line", String(readLine));
     document.documentElement.style.setProperty("--read-font",
       readFamily === "sans" ? "'Noto Sans KR', sans-serif" : "'Noto Serif KR', serif");
@@ -4347,6 +4373,15 @@
   });
   document.querySelectorAll("#familyRow .seg-btn").forEach(b=>{
     b.addEventListener("click", ()=>{ readFamily = b.dataset.family; applyReadStyle(); persistPrefs(); saveProgress(); });
+  });
+  document.querySelectorAll("#turnRow .seg-btn").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      turnMotion = b.dataset.turn;
+      applyReadStyle();
+      persistPrefs();
+      // show what it now feels like, without leaving the chapter
+      announceChapter(1);
+    });
   });
 
   function applyTheme(){
@@ -5290,7 +5325,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "55";
+  const SW_VERSION = "56";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
