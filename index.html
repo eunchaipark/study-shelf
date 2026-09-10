@@ -46,6 +46,16 @@
 <script src="./vendor/hljs-languages/kotlin.min.js"></script>
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
 <script src="./vendor/katex/katex.min.js"></script>
+<script>
+  // Device-local on purpose: which screen you are looking at, and the light
+  // in the room, are not properties of the library — syncing this would drag
+  // a phone's night setting onto a desktop at noon.
+  try{
+    var t = localStorage.getItem("uiTheme") || "auto";
+    document.documentElement.dataset.ui =
+      t === "auto" ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : t;
+  }catch(e){ document.documentElement.dataset.ui = "light"; }
+</script>
 <style>
   :root{
     --bg-app:#F7F5F2;
@@ -64,6 +74,10 @@
     --accent-wash:rgba(201,122,69,0.12);
     --danger:#DB7C72;
     --danger-wash:rgba(219,124,114,0.12);
+    --toast-bg:#3F3A34;
+    --toast-text:#FBF8F4;
+    --code-bg:rgba(0,0,0,0.06);
+    --rule:rgba(0,0,0,0.15);
 
     --ui-font:'Noto Sans KR', sans-serif;
     --display-font:'Space Grotesk', 'Noto Sans KR', sans-serif;
@@ -79,6 +93,49 @@
     --shadow-md:0 8px 24px rgba(63,58,52,.10);
     --shadow-lg:0 20px 50px rgba(63,58,52,.18);
   }
+  /* The reader has had a night theme from the start while the shelf and the
+     editor stayed white — the wrong half to leave bright, since the reading
+     is what happens at night and every trip back to the shelf flashed. The
+     palette is fully tokenised, so the dark app is a token swap. Resolved
+     before first paint by the inline script in <head>, and pinned or left on
+     the system by the toolbar control. Reader themes are a separate, per-book
+     choice and are deliberately not touched here. */
+  :root[data-ui="dark"]{
+    --bg-app:#16140F;
+    --bg-sunken:#1F1C16;
+    --bg-sunken-2:#2B261E;
+    --surface:#1C1915;
+    --line:#2C2721;
+    --line-strong:#3D372E;
+    --text-900:#EFE9E0;
+    --text-700:#D2CABF;
+    --text-500:#9C9287;
+    --text-400:#6F675E;
+    --accent-300:#EBB98F;
+    --accent-400:#CE8750;
+    --accent-500:#E2A571;
+    --accent-wash:rgba(206,135,80,0.18);
+    --danger:#E59087;
+    --danger-wash:rgba(229,144,135,0.18);
+    --toast-bg:#2E2921;
+    --toast-text:#F3EDE4;
+    --code-bg:rgba(255,255,255,0.07);
+    --rule:rgba(255,255,255,0.16);
+    --shadow-sm:0 1px 2px rgba(0,0,0,.45);
+    --shadow-md:0 8px 24px rgba(0,0,0,.5);
+    --shadow-lg:0 20px 50px rgba(0,0,0,.6);
+  }
+  :root[data-ui="dark"] .account-avatar{background:var(--bg-sunken-2);}
+  /* the editor's preview is the one place .read-inner renders without a
+     reader theme, so it needs the app's own colours instead of the light
+     defaults baked into the reading styles */
+  :root[data-ui="dark"] #editorPreviewScroll{--read-bg:var(--bg-app); --read-text:var(--text-900);}
+  :root[data-ui="dark"] #editorPreviewPane code,
+  :root[data-ui="dark"] #editorPreviewPane pre{background:var(--code-bg);}
+  :root[data-ui="dark"] #editorPreviewPane th,
+  :root[data-ui="dark"] #editorPreviewPane td,
+  :root[data-ui="dark"] #editorPreviewPane hr{border-color:var(--rule);}
+
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
   html,body{height:100%; overscroll-behavior:none;}
   body{
@@ -161,6 +218,8 @@
   }
   .search-toggle-btn .icon{width:16px; height:16px;}
   .search-toggle-btn.active{background:var(--accent-wash); color:var(--accent-500);}
+  /* always shown, unlike the search toggle it borrows its shape from */
+  .ui-theme-btn{display:flex !important;}
   /* phones: the search bar sat above the controls row as its own full row
      every time, permanently spending height on something used occasionally
      — collapse it into a small button that drops the input down as an
@@ -367,7 +426,7 @@
   #toastHost{position:fixed; left:0; right:0; bottom:0; z-index:60; display:flex; justify-content:center; padding:0 12px calc(14px + env(safe-area-inset-bottom)); pointer-events:none;}
   .toast{
     display:flex; align-items:center; gap:10px; max-width:min(520px, 100%);
-    background:var(--text-900); color:#fbf8f4; border-radius:var(--r-md);
+    background:var(--toast-bg); color:var(--toast-text); border-radius:var(--r-md);
     padding:10px 10px 10px 14px; box-shadow:var(--shadow-lg); font-size:13px; line-height:1.4;
     pointer-events:auto; transform:translateY(12px); opacity:0;
     transition:opacity .2s var(--ease), transform .2s var(--ease);
@@ -501,6 +560,8 @@
   .read-inner table{border-collapse:collapse; width:max-content; min-width:100%; margin:0; font-size:.92em;}
   .read-inner th,.read-inner td{border:1px solid rgba(0,0,0,0.15); padding:8px 10px; text-align:left;}
   .read-inner hr{border:none; border-top:1px solid rgba(0,0,0,0.15); margin:2em 0;}
+  [data-theme="night"] .read-inner th, [data-theme="night"] .read-inner td,
+  [data-theme="night"] .read-inner hr{border-color:rgba(255,255,255,0.16);}
   .read-inner a{color:var(--accent-500);}
 
   /* GFM task lists: marked doesn't add a task-list-item class, so target the
@@ -818,6 +879,7 @@
           <option value="added">추가된 순</option>
           <option value="progress">진행률순</option>
         </select>
+        <button class="search-toggle-btn ui-theme-btn" id="uiThemeBtn" aria-label="화면 테마"></button>
         <div class="density-toggle" role="group" aria-label="보기 방식">
           <button class="density-btn" data-density="comfortable" aria-label="카드형으로 보기">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg>
@@ -2397,6 +2459,43 @@
     renderAll();
   });
 
+  /* Cycles 시스템 -> 밝게 -> 어둡게. Kept out of the synced prefs for the
+     reason given by the head script. */
+  const UI_ICONS = {
+    auto: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M12 4v16" fill="currentColor"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/></svg>',
+    light: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.6v2.2M12 19.2v2.2M4.4 12H2.2M21.8 12h-2.2M6.3 6.3 4.8 4.8M19.2 19.2l-1.5-1.5M17.7 6.3l1.5-1.5M4.8 19.2l1.5-1.5"/></svg>',
+    dark: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M20 13.5A8.2 8.2 0 0 1 10.5 4a8.3 8.3 0 1 0 9.5 9.5z"/></svg>',
+  };
+  const UI_LABELS = { auto: "화면 테마: 시스템", light: "화면 테마: 밝게", dark: "화면 테마: 어둡게" };
+  const UI_ORDER = ["auto", "light", "dark"];
+  let uiTheme = "auto";
+  try{ uiTheme = localStorage.getItem("uiTheme") || "auto"; }catch(e){}
+  const darkQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  function resolvedUi(){
+    return uiTheme === "auto" ? (darkQuery && darkQuery.matches ? "dark" : "light") : uiTheme;
+  }
+  function applyUiTheme(){
+    const resolved = resolvedUi();
+    document.documentElement.dataset.ui = resolved;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if(meta) meta.setAttribute("content", resolved === "dark" ? "#16140F" : "#F7F5F2");
+    const btn = $("uiThemeBtn");
+    if(btn){
+      btn.innerHTML = UI_ICONS[uiTheme];
+      btn.title = UI_LABELS[uiTheme];
+      btn.setAttribute("aria-label", UI_LABELS[uiTheme]);
+      btn.classList.toggle("active", uiTheme !== "auto");
+    }
+  }
+  if(darkQuery && darkQuery.addEventListener){
+    darkQuery.addEventListener("change", ()=>{ if(uiTheme === "auto") applyUiTheme(); });
+  }
+  $("uiThemeBtn").addEventListener("click", ()=>{
+    uiTheme = UI_ORDER[(UI_ORDER.indexOf(uiTheme) + 1) % UI_ORDER.length];
+    try{ localStorage.setItem("uiTheme", uiTheme); }catch(e){}
+    applyUiTheme();
+  });
+
   function updateDensityButtons(){
     document.querySelectorAll(".density-btn").forEach(b=> b.classList.toggle("active", b.dataset.density===density));
   }
@@ -3117,7 +3216,7 @@
     activeFile = f;
     activeChapters = splitChapters(text, f.title, assetMap);
     fontSize = (f.progress && f.progress.fontSize) || 18;
-    theme = (f.progress && f.progress.theme) || "light";
+    theme = (f.progress && f.progress.theme) || (resolvedUi() === "dark" ? "night" : "light");
     applyFont(); applyTheme(); applyReadStyle();
 
     bookTitleTop.textContent = f.title;
@@ -4357,7 +4456,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "49";
+  const SW_VERSION = "50";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
@@ -4393,6 +4492,7 @@
     $("customTextInput").value = customText;
     $("customThemeSwatch").style.setProperty("--sw-custom-bg", customBg);
     $("customThemeSwatch").style.setProperty("--sw-custom-text", customText);
+    applyUiTheme();
     renderAll();
 
     // cloud sync loads in the background — never blocks the local-first
