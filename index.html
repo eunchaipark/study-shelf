@@ -571,7 +571,7 @@
     background:var(--toast-bg); color:var(--toast-text);
     border-radius:999px; padding:9px 16px; font-size:13px; font-weight:600;
     box-shadow:var(--shadow-lg);
-    transition:opacity .16s var(--ease), transform .16s var(--ease);
+    transition:opacity .22s var(--ease), transform .26s cubic-bezier(.16,.84,.36,1);
   }
   .chapter-flash.show{opacity:1; transform:translate(-50%,-50%) scale(1);}
   .chapter-flash .cf-n{color:var(--accent-300); font-variant-numeric:tabular-nums; flex:0 0 auto;}
@@ -579,10 +579,13 @@
   .chapter-flash.edge{background:var(--surface); color:var(--text-500); border:1px solid var(--line-strong);}
   /* the column slides in from the side it came from, so the direction is
      felt rather than only read */
-  @keyframes chap-in-next{ from{opacity:.3; transform:translateX(28px);} to{opacity:1; transform:none;} }
-  @keyframes chap-in-prev{ from{opacity:.3; transform:translateX(-28px);} to{opacity:1; transform:none;} }
-  .read-inner.turn-next{animation:chap-in-next .24s var(--ease);}
-  .read-inner.turn-prev{animation:chap-in-prev .24s var(--ease);}
+  /* Comes in from the side it was reached from and settles, rather than
+     nudging: a long deceleration, and starting from fully transparent so
+     there is never a frame of half-legible text sliding past. */
+  @keyframes chap-in-next{ from{opacity:0; transform:translate3d(38px,0,0);} to{opacity:1; transform:none;} }
+  @keyframes chap-in-prev{ from{opacity:0; transform:translate3d(-38px,0,0);} to{opacity:1; transform:none;} }
+  .read-inner.turn-next{animation:chap-in-next .34s cubic-bezier(.16,.84,.36,1) both; will-change:transform, opacity;}
+  .read-inner.turn-prev{animation:chap-in-prev .34s cubic-bezier(.16,.84,.36,1) both; will-change:transform, opacity;}
   @media (prefers-reduced-motion: reduce){
     .read-inner.turn-next, .read-inner.turn-prev{animation:none;}
   }
@@ -3850,6 +3853,7 @@
   }
 
   let chapterFlashTimer = null;
+  let turnClassTimer = null;
   function showChapterFlash(html, edge){
     const el = $("chapterFlash");
     if(!el) return;
@@ -3866,8 +3870,18 @@
     readInner.classList.remove("turn-next","turn-prev");
     void readInner.offsetWidth;              // restart the animation
     readInner.classList.add(dir > 0 ? "turn-next" : "turn-prev");
+    // animationend is the usual way out, but it never arrives when motion is
+    // reduced (the animation is switched off) — and the class carries a
+    // will-change on an element as tall as the whole chapter
+    clearTimeout(turnClassTimer);
+    turnClassTimer = setTimeout(()=> readInner.classList.remove("turn-next", "turn-prev"), 600);
   }
   // there is nowhere further to go — say so instead of doing nothing
+  readInner.addEventListener("animationend", (e)=>{
+    if(e.animationName === "chap-in-next" || e.animationName === "chap-in-prev"){
+      readInner.classList.remove("turn-next", "turn-prev");
+    }
+  });
   function announceEdge(dir){
     showChapterFlash(dir > 0 ? "마지막 장이에요" : "첫 장이에요", true);
   }
@@ -3883,8 +3897,12 @@
     readInner.innerHTML = activeChapters[chapterIdx].html;
     wrapWideTables(readInner);
     readInner.querySelectorAll("pre code").forEach(block=>{ try{ hljs.highlightElement(block); }catch(e){} });
-    paintHighlights();
     const firstHit = pendingSearchTerm ? highlightInChapter(pendingSearchTerm) : null;
+    // The turn is announced here, the instant the new text is in place —
+    // not after the awaits below. Run at the end it played *after* the new
+    // chapter was already on screen, so the column jumped sideways and slid
+    // back, which is the opposite of arriving.
+    if(announce !== false && cameFrom !== chapterIdx) announceChapter(chapterIdx > cameFrom ? 1 : -1);
     // .read-scroll has scroll-behavior:smooth (for deliberate jumps like
     // this one, in principle) but the content was just replaced wholesale —
     // "smoothly" animating from wherever the old chapter had scrolled to
@@ -3914,7 +3932,6 @@
     await loadInkForChapter();
     setupInkCanvas();
     settleChapterMedia(startFrac, readScroll.scrollTop);
-    if(announce !== false && cameFrom !== chapterIdx) announceChapter(chapterIdx > cameFrom ? 1 : -1);
   }
 
   /* ---- full-screen image viewer ------------------------------------------
@@ -4567,6 +4584,13 @@
     e.stopPropagation();
     showHlBar(mark.getBoundingClientRect(), { remove: mark.dataset.hl });
     if(hlBarEl) hlBarEl.dataset.pinned = "1";
+  });
+  // ...and a tap anywhere else puts it away again
+  document.addEventListener("pointerdown", (e)=>{
+    if(!hlBarEl || !hlBarEl.dataset.pinned) return;
+    if(hlBarEl.contains(e.target)) return;
+    if(e.target && e.target.closest && e.target.closest("mark.hl")) return;
+    closeHlBar();
   });
 
   /* ---------------- ink (handwriting) layer ----------------
@@ -5266,7 +5290,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "54";
+  const SW_VERSION = "55";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
