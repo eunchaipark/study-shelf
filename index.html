@@ -420,7 +420,7 @@
   .drag-overlay.show{display:flex;}
   .drag-overlay .msg{text-align:center; color:var(--accent-500); font-size:15px; font-weight:600;}
 
-  #fileInput{display:none;}
+  #fileInput, #restoreInput{display:none;}
 
   /* ============ Popovers / Modals (shared) ============ */
   #toastHost{position:fixed; left:0; right:0; bottom:0; z-index:60; display:flex; justify-content:center; padding:0 12px calc(14px + env(safe-area-inset-bottom)); pointer-events:none;}
@@ -880,6 +880,9 @@
           <option value="progress">진행률순</option>
         </select>
         <button class="search-toggle-btn ui-theme-btn" id="uiThemeBtn" aria-label="화면 테마"></button>
+        <button class="search-toggle-btn ui-theme-btn" id="libMoreBtn" aria-label="더보기" title="백업/복원">
+          <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+        </button>
         <div class="density-toggle" role="group" aria-label="보기 방식">
           <button class="density-btn" data-density="comfortable" aria-label="카드형으로 보기">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg>
@@ -905,6 +908,7 @@
     </div>
 
     <input type="file" id="fileInput" accept=".md,.markdown,text/markdown,text/plain,.png,.jpg,.jpeg,.gif,.webp,.svg,image/*" multiple>
+    <input type="file" id="restoreInput" accept=".json,application/json">
   </section>
 
   <!-- ============ READER SCREEN ============ -->
@@ -2508,6 +2512,155 @@
     });
   });
 
+  /* ---------------- taking your library with you ----------------------
+     Everything lived in one browser's IndexedDB and one Firebase project,
+     with no way out of either: nothing here could be read anywhere else,
+     and nothing could be recovered if that project went away. A backup you
+     cannot restore is only half a feature, so both directions are here. */
+  function downloadBlob(filename, blob){
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=> URL.revokeObjectURL(url), 4000);
+  }
+  const stamp = ()=>{
+    const d = new Date();
+    const p = n => String(n).padStart(2, "0");
+    return d.getFullYear() + p(d.getMonth()+1) + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes());
+  };
+  // a filename the OS will actually accept, without losing the title
+  function safeName(title){
+    return String(title || "제목 없음").replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "제목 없음";
+  }
+
+  // One self-contained .md: pictures are inlined, so the file opens with
+  // everything it needs in any editor rather than pointing at names that
+  // only ever existed inside this app.
+  async function exportFileAsMarkdown(f){
+    const text = await S.getText("file-content:"+f.id);
+    if(text == null){ toast("본문을 찾을 수 없어요"); return; }
+    const assets = await S.getJSON("assets:"+f.id, null);
+    let out = text;
+    if(assets){
+      for(const name of Object.keys(assets)){
+        const url = assets[name];
+        // both the bare and the angle-bracketed destination this app writes
+        out = out.split("](<" + name + ">)").join("](" + url + ")");
+        out = out.split("](" + name + ")").join("](" + url + ")");
+      }
+    }
+    downloadBlob(safeName(f.title) + ".md", new Blob([out], { type: "text/markdown;charset=utf-8" }));
+  }
+
+  async function buildBackup(){
+    const content = {}, assets = {}, ink = {};
+    for(const f of files){
+      const t = await S.getText("file-content:"+f.id);
+      if(t != null) content[f.id] = t;
+      const a = await S.getJSON("assets:"+f.id, null);
+      if(a && Object.keys(a).length) assets[f.id] = a;
+      for(const idx of Object.keys(inkTsMap(f))){
+        const strokes = await S.getJSON("ink:"+f.id+":"+idx, null);
+        if(strokes && strokes.length) ink[f.id+":"+idx] = strokes;
+      }
+    }
+    return {
+      app: "study-shelf", version: 1, exportedAt: Date.now(),
+      folders, files,
+      prefs: { sortMode, density, customBg, customText, readLine, readFamily },
+      content, assets, ink,
+    };
+  }
+
+  async function exportBackup(){
+    toast("백업을 만드는 중이에요…");
+    try{
+      const data = await buildBackup();
+      downloadBlob("study-shelf-" + stamp() + ".json",
+        new Blob([JSON.stringify(data)], { type: "application/json" }));
+      toast(files.length + "권을 백업했어요");
+    }catch(e){
+      console.warn("backup failed", e);
+      toast("백업을 만들지 못했어요");
+    }
+  }
+
+  // Merges rather than replaces, and never deletes: restoring onto a device
+  // that has moved on since should not throw its newer work away.
+  async function importBackup(file){
+    let data;
+    try{ data = JSON.parse(await file.text()); }
+    catch(e){ toast("백업 파일을 읽지 못했어요"); return; }
+    if(!data || data.app !== "study-shelf" || !Array.isArray(data.files)){
+      toast("이 앱의 백업 파일이 아니에요");
+      return;
+    }
+    await libraryReady;
+    let added = 0, updated = 0;
+    const folderById2 = new Map(folders.map(fo=> [fo.id, fo]));
+    for(const fo of (data.folders || [])){
+      const mine = folderById2.get(fo.id);
+      if(!mine) folders.push(Object.assign({}, fo));
+      else if((fo.updatedTs||0) > (mine.updatedTs||0)) Object.assign(mine, fo);
+    }
+    const fileById = new Map(files.map(f=> [f.id, f]));
+    for(const f of data.files){
+      const mine = fileById.get(f.id);
+      const incomingNewer = !mine || (f.updatedTs||0) > (mine.updatedTs||0);
+      if(!mine){ files.push(Object.assign({}, f)); added++; }
+      else if(incomingNewer){ Object.assign(mine, f); updated++; }
+      if(!mine || incomingNewer){
+        if(data.content && data.content[f.id] != null) await S.setText("file-content:"+f.id, data.content[f.id]);
+        if(data.assets && data.assets[f.id]) await S.setJSON("assets:"+f.id, data.assets[f.id]);
+      }
+    }
+    for(const key of Object.keys(data.ink || {})){
+      const [fid, idx] = key.split(":");
+      const target = files.find(f=> f.id === fid);
+      if(target) await S.setJSON("ink:"+fid+":"+idx, data.ink[key]);
+    }
+    if(data.prefs){
+      readLine = Number(data.prefs.readLine) || readLine;
+      readFamily = data.prefs.readFamily === "sans" ? "sans" : readFamily;
+      customBg = data.prefs.customBg || customBg;
+      customText = data.prefs.customText || customText;
+      await persistPrefs();
+      applyReadStyle();
+    }
+    reconcileFolderTree();
+    await persistFolders();
+    await persistFiles();
+    renderAll();
+    toast(added + "권을 새로 가져오고 " + updated + "권을 갱신했어요");
+  }
+
+  /* ---------------- library "more" menu ---------------- */
+  $("restoreInput").addEventListener("change", (e)=>{
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if(file) importBackup(file);
+  });
+  $("libMoreBtn").addEventListener("click", (e)=>{
+    const anchor = e.currentTarget;
+    e.stopPropagation();
+    closeAllOverlays();
+    const menu = document.createElement("div");
+    menu.className = "menu-pop";
+    menu.innerHTML =
+      '<div class="menu-sub-label">백업</div>'+
+      '<button class="menu-item" id="backupBtn"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>전체 백업 저장</button>'+
+      '<button class="menu-item" id="restoreBtn"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M4 7V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2"/></svg>백업에서 복원</button>';
+    document.body.appendChild(menu);
+    placeMenu(menu, anchor);
+    $("overlay").classList.add("show");
+    $("backupBtn").addEventListener("click", ()=>{ closeAllOverlays(); exportBackup(); });
+    $("restoreBtn").addEventListener("click", ()=>{ closeAllOverlays(); $("restoreInput").click(); });
+  });
+
   /* ---------------- new folder modal ---------------- */
   function openNewFolderModal(){
     closeAllOverlays();
@@ -2549,6 +2702,7 @@
     menu.innerHTML =
       '<button class="menu-item" data-act="edit"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>편집</button>'+
       '<button class="menu-item" data-act="rename"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>이름 변경</button>'+
+      '<button class="menu-item" data-act="export"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>마크다운으로 저장</button>'+
       '<div class="menu-sub-label">폴더로 이동</div>'+
       '<button class="menu-item" data-act="move" data-folder="">미분류</button>'+
       folders.map(fo=>'<button class="menu-item" data-act="move" data-folder="'+fo.id+'">'+escapeHtml(folderPathLabel(fo.id))+'</button>').join("")+
@@ -2566,6 +2720,7 @@
     });
     menu.querySelector('[data-act="edit"]').addEventListener("click", ()=>{ closeAllOverlays(); openEditor(f); });
     menu.querySelector('[data-act="rename"]').addEventListener("click", ()=> openRenameModal(f));
+    menu.querySelector('[data-act="export"]').addEventListener("click", ()=>{ closeAllOverlays(); exportFileAsMarkdown(f); });
     menu.querySelector('[data-act="delete"]').addEventListener("click", ()=> openDeleteModal(f));
   }
 
@@ -4456,7 +4611,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "50";
+  const SW_VERSION = "51";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
