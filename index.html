@@ -2119,7 +2119,12 @@
       if(activeFile){
         const still = files.find(x=> x.id === activeFile.id);
         if(still) activeFile = still;
-        else if(!readerScreen.classList.contains("hidden")) $("backBtn").click();
+        else if(!readerScreen.classList.contains("hidden")){
+          // being returned to the shelf with no explanation reads as the app
+          // throwing you out, so say what happened
+          $("backBtn").click();
+          toast("이 책이 다른 기기에서 삭제돼서 서재로 돌아왔어요");
+        }
       }
 
       renderAll();
@@ -5393,25 +5398,30 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "59";
+  const SW_VERSION = "60";
   if("serviceWorker" in navigator){
-    // Only reload when an *update* replaces an already-controlling worker.
-    // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
-    // become non-null right after activation even on a brand-new install — so
-    // without this check every first-ever visit would trigger a surprise reload.
+    // Only offer when an *update* replaces an already-controlling worker.
+    // sw.js calls clients.claim(), so controller becomes non-null right
+    // after activation even on a brand-new install — without this check a
+    // first-ever visit would look like an update.
     const hadControllerBeforeRegister = !!navigator.serviceWorker.controller;
     window.addEventListener("load", ()=>{
       navigator.serviceWorker.register("./sw.js?v="+SW_VERSION).then(reg=>{
-        // once a new shell takes over, reload once so the user gets it immediately
-        let reloaded = false;
+        let offered = false;
         reg.addEventListener("updatefound", ()=>{
           const installing = reg.installing;
           if(!installing) return;
           installing.addEventListener("statechange", ()=>{
-            if(installing.state === "activated" && hadControllerBeforeRegister && !reloaded){
-              reloaded = true;
-              location.reload();
-            }
+            if(installing.state !== "activated" || !hadControllerBeforeRegister || offered) return;
+            offered = true;
+            // This used to reload on the spot. Installing takes a few seconds
+            // on a phone, so it landed a few seconds after launch — by which
+            // time you are usually inside a book — and since the app always
+            // starts at the shelf, an update read as being thrown out of
+            // whatever you were doing. The new worker has already claimed
+            // the page, so the next launch picks it up regardless; there is
+            // nothing to gain by taking the page away now.
+            toast("새 버전이 준비됐어요", "새로고침", ()=> location.reload());
           });
         });
       }).catch(()=>{});
