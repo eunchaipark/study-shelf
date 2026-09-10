@@ -777,27 +777,6 @@
   .color-pick-label input[type="color"]::-webkit-color-swatch-wrapper{padding:2px;}
   .color-pick-label input[type="color"]::-webkit-color-swatch{border:none; border-radius:5px;}
 
-  /* Pen mode used to be visible only as a highlighted icon in the top bar,
-     and leaving it took two taps — the first re-opened the toolbar you had
-     dismissed. This sits just above the chapter nav for the whole time
-     drawing is on: it says so, reopens the tools, and gets out in one tap. */
-  .ink-hud{
-    position:absolute; left:50%; bottom:12px; transform:translateX(-50%);
-    z-index:22; display:flex; align-items:center; gap:2px;
-    background:var(--toast-bg); color:var(--toast-text);
-    border-radius:999px; padding:4px; box-shadow:var(--shadow-lg);
-  }
-  .ink-hud-btn{
-    display:flex; align-items:center; gap:6px; background:transparent; border:none;
-    color:inherit; font-family:inherit; font-size:12.5px; font-weight:600;
-    padding:7px 13px; border-radius:999px;
-  }
-  .ink-hud-btn .icon{width:15px; height:15px;}
-  .ink-hud-btn:active{background:rgba(255,255,255,.15);}
-  @media (hover:hover) and (pointer:fine){ .ink-hud-btn:hover{background:rgba(255,255,255,.12);} }
-  .ink-hud-btn.done{color:var(--accent-300);}
-  .ink-hud-sep{width:1px; height:18px; background:rgba(255,255,255,.18); flex:0 0 auto;}
-
   .ink-pop{left:10px; right:auto;}
   .ink-row{display:flex; align-items:center; gap:9px; margin-bottom:18px; flex-wrap:wrap;}
   .ink-swatch{width:30px; height:30px; border-radius:50%; border:2px solid transparent; background:var(--sw); position:relative; flex:0 0 auto; padding:0;}
@@ -824,6 +803,7 @@
   .ink-actions-row .btn .icon{width:15px; height:15px;}
   .ink-actions-row .btn:disabled{opacity:.4; pointer-events:none;}
   .ink-size-btn.active{border-color:var(--accent-400); color:var(--accent-500); background:var(--accent-wash);}
+  .ink-done-btn{width:100%; justify-content:center; margin-top:14px; color:var(--accent-500); border-color:var(--accent-400);}
   .ink-clear-btn{width:100%; justify-content:center; margin-top:8px;}
 
   /* ============ EDITOR SCREEN ============ */
@@ -1039,9 +1019,7 @@
       <button class="icon-btn" id="tocBtn" aria-label="목차">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
       </button>
-      <button class="icon-btn" id="penBtn" aria-label="필기">
-        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
-      </button>
+      <button class="icon-btn" id="penBtn" aria-label="필기"></button>
       <button class="icon-btn" id="readerEditBtn" aria-label="편집">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
       </button>
@@ -1074,15 +1052,6 @@
         </div>
 
         <div class="chapter-flash" id="chapterFlash" aria-live="polite"></div>
-
-        <div class="ink-hud" id="inkHud" hidden>
-          <button class="ink-hud-btn" id="inkHudTools">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
-            <span>도구</span>
-          </button>
-          <span class="ink-hud-sep"></span>
-          <button class="ink-hud-btn done" id="inkHudDone">완료</button>
-        </div>
 
         <div class="ribbon-track"><div class="ribbon-fill" id="ribbonFill"></div></div>
 
@@ -1163,6 +1132,10 @@
               다시하기
             </button>
           </div>
+          <button class="btn btn-ghost ink-done-btn" id="inkDoneBtn">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
+            필기 끝내기
+          </button>
           <button class="btn btn-ghost ink-clear-btn" id="inkClearBtn">전체 지우기</button>
         </div>
       </div>
@@ -5307,10 +5280,17 @@
     inkCanvas.addEventListener("contextmenu", (e)=>{ if(penMode) e.preventDefault(); });
   }
 
+  // The button carries the pen while drawing is off and a hand while it is
+  // on, so it always shows what the next tap does — and, being the only
+  // standing sign of the mode, why one finger has stopped scrolling.
+  const PEN_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
+  const HAND_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11V4.8a1.3 1.3 0 0 1 2.6 0V11"/><path d="M11.6 10.4V3.6a1.3 1.3 0 0 1 2.6 0v6.8"/><path d="M14.2 11V5.6a1.3 1.3 0 0 1 2.6 0V13"/><path d="M6.4 12.4V9.2a1.3 1.3 0 0 1 2.6 0V14"/><path d="M6.4 12.4c0 3.6 1.2 8.6 6 8.6 3.6 0 4.4-3 4.4-6"/></svg>';
   function setPenMode(on){
     penMode = on;
     $("penBtn").classList.toggle("active", on);
-    $("inkHud").hidden = !on;
+    $("penBtn").innerHTML = on ? HAND_ICON : PEN_ICON;
+    $("penBtn").setAttribute("aria-label", on ? "필기 끝내기" : "필기");
+    $("penBtn").title = on ? "필기 끝내기" : "필기";
     if(inkCanvas) inkCanvas.classList.toggle("inactive", !penMode);
     if(on){ closeSettings(); if(!isTabletUp()) closeDrawer(); openInkPop(); }
     else { closeInkPop(); hideInkCursor(); }
@@ -5329,11 +5309,7 @@
     e.stopPropagation();
     setPenMode(!penMode);
   });
-  $("inkHudTools").addEventListener("click", (e)=>{
-    e.stopPropagation();
-    if($("inkPop").classList.contains("show")) closeInkPop(); else openInkPop();
-  });
-  $("inkHudDone").addEventListener("click", (e)=>{
+  $("inkDoneBtn").addEventListener("click", (e)=>{
     e.stopPropagation();
     setPenMode(false);
   });
@@ -5343,7 +5319,7 @@
     if(!penMode) return;
     const pop = $("inkPop");
     if(!pop.classList.contains("show")) return;
-    if(pop.contains(e.target) || e.target.closest("#penBtn") || e.target.closest("#inkHud")) return;
+    if(pop.contains(e.target) || e.target.closest("#penBtn")) return;
     closeInkPop();
   });
 
@@ -5417,7 +5393,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "58";
+  const SW_VERSION = "59";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
@@ -5454,6 +5430,7 @@
     $("customThemeSwatch").style.setProperty("--sw-custom-bg", customBg);
     $("customThemeSwatch").style.setProperty("--sw-custom-text", customText);
     applyUiTheme();
+    setPenMode(false);   // the button's icon is drawn from this
     renderAll();
 
     // cloud sync loads in the background — never blocks the local-first
