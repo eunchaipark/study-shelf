@@ -2278,10 +2278,39 @@
     childFolders(id).forEach(c=> out.push(...descendantFolderIds(c.id)));
     return out;
   }
-  function folderFileCount(id){
-    const ids = new Set(descendantFolderIds(id));
-    return files.filter(f=> f.folderId && ids.has(f.folderId)).length;
+  /* Every folder row asks for its subtree's file count, and each answer used
+     to re-walk that subtree (childFolders scans all folders per step) and
+     then scan every file — so drawing the sidebar cost roughly folders x
+     files, repeated per row. One pass now counts direct children and rolls
+     the totals up from the leaves, and the render reuses it. */
+  let folderCountCache = null;
+  function invalidateFolderCounts(){ folderCountCache = null; }
+  function folderCounts(){
+    if(folderCountCache) return folderCountCache;
+    const direct = new Map(), kids = new Map();
+    for(const fo of folders){
+      direct.set(fo.id, 0);
+      const p = fo.parentId || null;
+      if(!kids.has(p)) kids.set(p, []);
+      kids.get(p).push(fo.id);
+    }
+    for(const f of files){
+      if(f.folderId && direct.has(f.folderId)) direct.set(f.folderId, direct.get(f.folderId) + 1);
+    }
+    const total = new Map();
+    const walk = (id)=>{
+      if(total.has(id)) return total.get(id);
+      let n = direct.get(id) || 0;
+      for(const k of (kids.get(id) || [])) n += walk(k);
+      total.set(id, n);
+      return n;
+    };
+    // reconcileFolderTree guarantees no cycles, so this terminates
+    for(const fo of folders) walk(fo.id);
+    folderCountCache = total;
+    return total;
   }
+  function folderFileCount(id){ return folderCounts().get(id) || 0; }
   function folderPathLabel(id){
     const parts=[];
     let cur = folderById(id);
@@ -2325,6 +2354,8 @@
 
   /* ---------------- folder rail ---------------- */
   function renderFolderRail(){
+    invalidateFolderCounts();
+    invalidateVisible();
     const rail = $("railDynamic");
     rail.innerHTML = "";
 
@@ -2359,7 +2390,7 @@
       const label = document.createElement("button");
       label.className = "crumb-item active";
       // counts what is actually on screen, which is titles plus body hits
-      const found = visibleFiles().length + contentHits.length;
+      const found = visibleFilesCached().length + contentHits.length;
       label.textContent = "검색 결과 " + found + (contentSearchBusy ? "건+ · 지우기 ✕" : "건 · 지우기 ✕");
       label.addEventListener("click", ()=>{ resetSearch(); renderAll(); });
       note.appendChild(label);
@@ -2523,9 +2554,19 @@
     return sortFiles(files.filter(f=>(f.folderId||null) === pid));
   }
 
+  // renderFolderRail's search label wants the same list renderFileList is
+  // about to build; sorting and filtering the library twice per keystroke
+  // was pure duplication
+  let visibleCache = null;
+  function invalidateVisible(){ visibleCache = null; }
+  function visibleFilesCached(){
+    if(!visibleCache) visibleCache = visibleFiles();
+    return visibleCache;
+  }
+
   function renderFileList(){
     const list = $("fileList");
-    const vis = visibleFiles();
+    const vis = visibleFilesCached();
     list.innerHTML = "";
     if(vis.length===0){
       if(searchQuery.trim()){
@@ -2606,7 +2647,7 @@
     renderContentHits(list);
   }
 
-  function renderAll(){ renderFolderRail(); renderFileList(); }
+  function renderAll(){ invalidateFolderCounts(); invalidateVisible(); renderFolderRail(); renderFileList(); }
 
   /* ---------------- searching inside the books -------------------------
      Search only ever looked at titles, which is the one thing you already
@@ -2624,12 +2665,23 @@
   let contentSearchBusy = false;
   const CONTENT_HIT_LIMIT = 60;
 
+  // One search over a large shelf would otherwise leave every book's text
+  // resident for the rest of the session. Keep the most recently used ones
+  // and let the rest go — a re-read is a single IndexedDB get.
+  const CONTENT_CACHE_MAX = 40;
   async function contentFor(f){
     const ts = fileContentTs(f);
     const hit = contentCache.get(f.id);
-    if(hit && hit.ts === ts) return hit.text;
+    if(hit && hit.ts === ts){
+      contentCache.delete(f.id);          // re-insert to mark it as recent
+      contentCache.set(f.id, hit);
+      return hit.text;
+    }
     const text = (await S.getText("file-content:"+f.id)) || "";
     contentCache.set(f.id, { ts, text });
+    while(contentCache.size > CONTENT_CACHE_MAX){
+      contentCache.delete(contentCache.keys().next().value);
+    }
     return text;
   }
 
@@ -4093,8 +4145,11 @@
     return overall;
   }
   readScroll.addEventListener("scroll", ()=>{
-    updateProgress();
+    // syncInkWindow only reads geometry in the common case; updateProgress
+    // writes. Doing the reads first keeps the write from forcing a fresh
+    // layout on the very next line, every frame of every scroll.
     syncInkWindow();
+    updateProgress();
     clearTimeout(readScroll._t);
     readScroll._t = setTimeout(saveProgress, 500);
   });
@@ -5325,7 +5380,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "56";
+  const SW_VERSION = "57";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
