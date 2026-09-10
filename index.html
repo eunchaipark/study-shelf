@@ -67,7 +67,9 @@
 
     --ui-font:'Noto Sans KR', sans-serif;
     --display-font:'Space Grotesk', 'Noto Sans KR', sans-serif;
+    --read-font-serif:'Noto Serif KR', serif;
     --read-font:'Noto Serif KR', serif;
+    --read-line:1.85;
     --read-size:18px;
 
     --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px; --sp-6:28px; --sp-7:40px;
@@ -445,7 +447,7 @@
   .read-scroll{flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; background:var(--read-bg, var(--bg-app)); scroll-behavior:smooth;}
   .read-inner{
     position:relative; max-width:min(680px, 92vw); margin:0 auto; padding:44px 6px 96px;
-    font-family:var(--read-font); font-size:var(--read-size); line-height:1.85; color:var(--read-text, #1d1e21);
+    font-family:var(--read-font); font-size:var(--read-size); line-height:var(--read-line); color:var(--read-text, #1d1e21);
     overflow-wrap:anywhere;
   }
   /* code keeps its own horizontal scroll box instead of wrapping mid-token */
@@ -462,6 +464,29 @@
   .read-inner pre{background:rgba(0,0,0,0.06); padding:16px; border-radius:var(--r-md); overflow-x:auto; margin:0 0 1.2em;}
   .read-inner pre code{background:none; padding:0;}
   .read-inner img{max-width:100%; border-radius:var(--r-sm); display:block; margin:1em auto;}
+  /* a diagram squeezed into a 380px column is unreadable on a phone, and the
+     page itself cannot be pinched while the app owns the whole viewport */
+  @media (hover:hover) and (pointer:fine){ .read-inner img{cursor:zoom-in;} }
+  .img-zoom{
+    position:fixed; inset:0; z-index:70; background:rgba(18,16,15,.95);
+    display:flex; align-items:center; justify-content:center; overflow:hidden;
+    touch-action:none; opacity:0; transition:opacity .18s var(--ease);
+  }
+  .img-zoom.show{opacity:1;}
+  .img-zoom img{
+    max-width:100%; max-height:100%; transform-origin:0 0; will-change:transform;
+    user-select:none; -webkit-user-drag:none; display:block;
+  }
+  .img-zoom-close{
+    position:absolute; top:calc(8px + env(safe-area-inset-top)); right:8px;
+    width:40px; height:40px; border-radius:50%; border:none; color:#fff;
+    background:rgba(255,255,255,.16); display:flex; align-items:center; justify-content:center;
+  }
+  .img-zoom-close .icon{width:19px; height:19px;}
+  .img-zoom-hint{
+    position:absolute; left:0; right:0; bottom:calc(12px + env(safe-area-inset-bottom));
+    text-align:center; color:rgba(255,255,255,.5); font-size:11.5px; pointer-events:none;
+  }
   /* A table wide enough to exceed the column scrolls inside its own box,
      the way pre and .katex-display already do. Without this the table
      dragged the whole reading pane sideways — headings, paragraphs and all
@@ -602,6 +627,15 @@
   .ink-swatch.ink-eraser.active{background:var(--bg-sunken-2); color:var(--text-900); box-shadow:0 0 0 2px var(--surface), 0 0 0 4px var(--text-700);}
   .ink-swatch.ink-highlighter{width:34px; height:22px; border-radius:6px;}
   .ink-swatch.ink-highlighter.active{box-shadow:0 0 0 2px var(--surface), 0 0 0 4px var(--text-700);}
+  .seg-row{display:flex; gap:6px; margin-bottom:18px;}
+  .seg-btn{
+    flex:1; height:34px; border-radius:var(--r-sm); border:1px solid var(--line-strong);
+    background:var(--surface); color:var(--text-500); font-size:12.5px; font-weight:600;
+    transition:background-color .15s var(--ease), color .15s var(--ease), border-color .15s var(--ease);
+  }
+  .seg-btn.active{border-color:var(--accent-400); color:var(--accent-500); background:var(--accent-wash);}
+  .seg-btn.serif{font-family:var(--read-font-serif);}
+  .seg-btn.sans{font-family:'Noto Sans KR', sans-serif;}
   .ink-size-row{display:flex; gap:8px; margin-bottom:18px;}
   .ink-size-btn{flex:1; height:34px; border-radius:var(--r-sm); border:1px solid var(--line-strong); background:var(--surface); color:var(--text-500); font-size:14px; display:flex; align-items:center; justify-content:center; transition:all .15s var(--ease);}
   .ink-size-btn .dot{border-radius:50%; background:currentColor;}
@@ -863,6 +897,17 @@
             <span class="val" id="fontVal">18px</span>
             <button id="fontPlus" aria-label="글자 크게">+</button>
           </div>
+          <h5>줄 간격</h5>
+          <div class="seg-row" id="lineRow">
+            <button class="seg-btn" data-line="1.55">좁게</button>
+            <button class="seg-btn" data-line="1.85">보통</button>
+            <button class="seg-btn" data-line="2.2">넓게</button>
+          </div>
+          <h5>서체</h5>
+          <div class="seg-row" id="familyRow">
+            <button class="seg-btn serif" data-family="serif">명조</button>
+            <button class="seg-btn sans" data-family="sans">고딕</button>
+          </div>
           <h5>테마</h5>
           <div class="theme-row">
             <button class="theme-swatch sw-light" data-theme-choice="light">밝게</button>
@@ -1045,6 +1090,8 @@
   let density = "comfortable"; // 'comfortable' | 'compact'
   let customBg = "#faf9f6";   // reader "직접" theme colors — global, shared across books
   let customText = "#1d1e21";
+  let readLine = 1.85;        // line height and typeface are a reading habit,
+  let readFamily = "serif";   // not something to re-pick per book
 
   // IndexedDB's initial open+read is async, so a file dropped/uploaded in the
   // first instant after page load could otherwise race loadLibrary()'s
@@ -1056,6 +1103,12 @@
   async function loadLibrary(){
     folders = await S.getJSON("app:folders", []);
     files = await S.getJSON("app:files", []);
+    // a library saved in a broken shape must not be able to hang the app on
+    // every subsequent launch
+    if(reconcileFolderTree()){
+      await S.setJSON("app:folders", folders);
+      await S.setJSON("app:files", files);
+    }
   }
   async function persistFolders(){ bumpLibraryRev(); await S.setJSON("app:folders", folders); scheduleSync(); }
   async function persistFiles(){ bumpLibraryRev(); await S.setJSON("app:files", files); scheduleSync(); }
@@ -1066,11 +1119,13 @@
     density = prefs.density || "comfortable";
     customBg = prefs.customBg || "#faf9f6";
     customText = prefs.customText || "#1d1e21";
+    readLine = Number(prefs.readLine) || 1.85;
+    readFamily = prefs.readFamily === "sans" ? "sans" : "serif";
     prefsUpdatedTs = prefs.updatedTs || 0;
   }
   async function persistPrefs(){
     prefsUpdatedTs = Date.now();
-    await S.setJSON("app:prefs", {sortMode, density, customBg, customText, updatedTs: prefsUpdatedTs});
+    await S.setJSON("app:prefs", {sortMode, density, customBg, customText, readLine, readFamily, updatedTs: prefsUpdatedTs});
     scheduleSync();
   }
 
@@ -1717,12 +1772,8 @@
       folders = mergedFolders;
       files = mergedFiles;
 
-      // the folder you are standing in can be deleted on another device;
-      // without this the breadcrumb keeps pointing at it and shows "?"
-      const liveFolder = new Set(folders.map(fo=> fo.id));
-      const strandedAt = folderPath.findIndex(id=> !liveFolder.has(id));
-      if(strandedAt !== -1) folderPath = folderPath.slice(0, strandedAt);
-      expandedFolders.forEach(id=>{ if(!liveFolder.has(id)) expandedFolders.delete(id); });
+      // the merge can leave cycles and orphans behind — see reconcileFolderTree
+      reconcileFolderTree();
 
       for(const f of purged){
         await S.del("file-content:"+f.id);
@@ -1800,12 +1851,15 @@
         density = cloudPrefs.density || density;
         customBg = cloudPrefs.customBg || customBg;
         customText = cloudPrefs.customText || customText;
+        readLine = Number(cloudPrefs.readLine) || readLine;
+        readFamily = cloudPrefs.readFamily === "sans" ? "sans" : (cloudPrefs.readFamily === "serif" ? "serif" : readFamily);
         prefsUpdatedTs = cloudPrefs.updatedTs;
-        await S.setJSON("app:prefs", {sortMode, density, customBg, customText, updatedTs: prefsUpdatedTs});
+        await S.setJSON("app:prefs", {sortMode, density, customBg, customText, readLine, readFamily, updatedTs: prefsUpdatedTs});
         sortSelect.value = sortMode;
         updateDensityButtons();
+        applyReadStyle();
       } else if(!cloudPrefs || (cloudPrefs.updatedTs||0) < prefsUpdatedTs){
-        await setDoc(prefsRef, {sortMode, density, customBg, customText, updatedTs: prefsUpdatedTs});
+        await setDoc(prefsRef, {sortMode, density, customBg, customText, readLine, readFamily, updatedTs: prefsUpdatedTs});
       }
 
       // the reader holds a direct reference to its file; if the merge
@@ -1921,6 +1975,56 @@
   function currentParentId(){ return folderPath.length ? folderPath[folderPath.length-1] : null; }
   function folderById(id){ return folders.find(f=>f.id===id); }
   function childFolders(parentId){ return folders.filter(f=>(f.parentId||null)===(parentId||null)); }
+
+  /* The tree is walked recursively in several places (the sidebar render,
+     descendantFolderIds, folderPathLabel), all of which assume it really is
+     a tree. Merging two libraries can break that assumption in two ways, and
+     neither device did anything wrong on its own:
+
+       - a cycle: A moves 가 into 나 while B moves 나 into 가. Each move is
+         legal where it was made, and each device's own guard sees nothing
+         to refuse. Merged, the walks never terminate — the sidebar render
+         recurses until the stack dies, and the library will not open again
+         after a reload either, because the data is still that shape.
+       - an orphan: A deletes a folder while B is putting things inside it.
+         The tombstone removes the folder everywhere, but the subfolder and
+         the files that pointed at it survive with a parent that is gone, so
+         they render nowhere at all — a book still counted under 전체 but
+         reachable from no folder.
+
+     Repairing costs one pass and only touches records that are already
+     broken. Timestamps are bumped so the repair itself propagates instead
+     of being overwritten by the copy that caused it. */
+  function reconcileFolderTree(){
+    const byId = new Map(folders.map(fo=> [fo.id, fo]));
+    let changed = false;
+    const now = Date.now();
+
+    for(const fo of folders){
+      if(!fo.parentId) continue;
+      // parent gone: bring it up to the root rather than lose it
+      if(!byId.has(fo.parentId)){
+        fo.parentId = null; fo.updatedTs = now; changed = true;
+        continue;
+      }
+      // walk up; anything that comes back to itself is a cycle
+      const seen = new Set([fo.id]);
+      let cur = byId.get(fo.parentId);
+      while(cur){
+        if(seen.has(cur.id)){ fo.parentId = null; fo.updatedTs = now; changed = true; break; }
+        seen.add(cur.id);
+        cur = cur.parentId ? byId.get(cur.parentId) : null;
+      }
+    }
+    for(const f of files){
+      if(f.folderId && !byId.has(f.folderId)){ f.folderId = null; f.updatedTs = now; changed = true; }
+    }
+    // and don't leave the breadcrumb standing somewhere that no longer exists
+    const stranded = folderPath.findIndex(id=> !byId.has(id));
+    if(stranded !== -1) folderPath = folderPath.slice(0, stranded);
+    expandedFolders.forEach(id=>{ if(!byId.has(id)) expandedFolders.delete(id); });
+    return changed;
+  }
   function descendantFolderIds(id){
     const out=[id];
     childFolders(id).forEach(c=> out.push(...descendantFolderIds(c.id)));
@@ -3014,7 +3118,7 @@
     activeChapters = splitChapters(text, f.title, assetMap);
     fontSize = (f.progress && f.progress.fontSize) || 18;
     theme = (f.progress && f.progress.theme) || "light";
-    applyFont(); applyTheme();
+    applyFont(); applyTheme(); applyReadStyle();
 
     bookTitleTop.textContent = f.title;
     drawerTitle.textContent = f.title;
@@ -3026,7 +3130,15 @@
     // tablet+: TOC panel defaults open (it's a side panel, not an overlay);
     // phones keep the drawer closed until the user taps the toc button
     if(isTabletUp()) openDrawer(); else closeDrawer();
-    renderChapter((f.progress && f.progress.chapterIdx) || 0);
+    const prog = f.progress || {};
+    let frac = typeof prog.frac === "number" ? prog.frac : 0;
+    // records written before the position was stored still carry the overall
+    // percentage, which the chapter position can be recovered from
+    if(!frac && typeof prog.pct === "number" && activeChapters.length){
+      const derived = prog.pct * activeChapters.length - (prog.chapterIdx || 0);
+      if(derived > 0 && derived < 1) frac = derived;
+    }
+    renderChapter(prog.chapterIdx || 0, true, frac);
   }
 
   // Tables come out of the markdown renderer bare; give each one its own
@@ -3042,7 +3154,31 @@
     });
   }
 
-  async function renderChapter(idx, resetScroll){
+  // Images have no height until they load, so the chapter is shorter at the
+  // moment it is first laid out than it will be a beat later: the ink surface
+  // gets sized to the wrong height and a restored reading position lands
+  // short. Re-apply both once the pictures are actually in — but only if the
+  // reader hasn't already moved, so this never yanks the page.
+  function settleChapterMedia(startFrac, settledAt){
+    const pending = Array.from(readInner.querySelectorAll("img")).filter(im=> !im.complete);
+    if(!pending.length) return;
+    let left = pending.length;
+    const done = ()=>{
+      if(--left > 0) return;
+      resizeInkCanvas();
+      if(startFrac && Math.abs(readScroll.scrollTop - settledAt) < 2){
+        const max = Math.max(0, readScroll.scrollHeight - readScroll.clientHeight);
+        readScroll.scrollTo({ top: Math.round(startFrac * max), behavior: "instant" });
+      }
+      updateProgress();
+    };
+    pending.forEach(im=>{
+      im.addEventListener("load", done, { once:true });
+      im.addEventListener("error", done, { once:true });
+    });
+  }
+
+  async function renderChapter(idx, resetScroll, startFrac){
     chapterIdx = Math.max(0, Math.min(idx, activeChapters.length-1));
     readInner.innerHTML = activeChapters[chapterIdx].html;
     wrapWideTables(readInner);
@@ -3053,7 +3189,13 @@
     // down through the brand-new chapter's content read as the page
     // lurching backwards on every chapter change. Instant here; smooth is
     // still what TOC/other explicit scrollIntoView-style jumps get.
-    if(resetScroll !== false) readScroll.scrollTo({ top: 0, behavior: "instant" });
+    if(resetScroll !== false){
+      // startFrac is only passed when reopening a book: the shelf already
+      // says "60% 읽음", so landing at the top of the chapter every time
+      // threw away a position the app had gone to the trouble of recording
+      const max = Math.max(0, readScroll.scrollHeight - readScroll.clientHeight);
+      readScroll.scrollTo({ top: startFrac ? Math.round(startFrac * max) : 0, behavior: "instant" });
+    }
     chapterIndicator.textContent = (chapterIdx+1) + " / " + activeChapters.length;
     $("prevBtn").disabled = chapterIdx === 0;
     $("nextBtn").disabled = chapterIdx === activeChapters.length-1;
@@ -3062,7 +3204,135 @@
     saveProgress();
     await loadInkForChapter();
     setupInkCanvas();
+    settleChapterMedia(startFrac, readScroll.scrollTop);
   }
+
+  /* ---- full-screen image viewer ------------------------------------------
+     A diagram scaled into a ~380px reading column is unreadable on a phone,
+     and the page itself cannot be pinched: the app owns the whole viewport
+     as a fixed layout, so the browser's own zoom has nothing to work with.
+     Tapping a picture opens it on its own, with pinch, drag and double-tap. */
+  let imgZoomEl = null;
+  function closeImageZoom(){
+    if(!imgZoomEl) return;
+    const el = imgZoomEl;
+    imgZoomEl = null;
+    el.classList.remove("show");
+    setTimeout(()=>{ if(el.parentNode) el.remove(); }, 200);
+  }
+  function openImageZoom(src, alt){
+    if(!src || imgZoomEl) return;
+    const wrap = document.createElement("div");
+    wrap.className = "img-zoom";
+    wrap.innerHTML =
+      '<img alt="">' +
+      '<button class="img-zoom-close" aria-label="닫기"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>' +
+      '<div class="img-zoom-hint">두 손가락으로 확대 · 두 번 탭 · 빈 곳을 탭하면 닫혀요</div>';
+    const img = wrap.querySelector("img");
+    img.src = src;
+    img.alt = alt || "";
+    document.body.appendChild(wrap);
+    imgZoomEl = wrap;
+    requestAnimationFrame(()=> wrap.classList.add("show"));
+
+    let scale = 1, tx = 0, ty = 0;
+    const pointers = new Map();
+    let pinchDist = 0, pinchScale = 1, pinchMid = null, panFrom = null;
+    let moved = 0, lastTap = 0;
+
+    // keep the picture from being dragged off into nothing: at 1x it stays
+    // centred, and beyond that it may only pan as far as its own overflow
+    function clamp(){
+      const r = img.getBoundingClientRect();
+      const w = r.width / scale, h = r.height / scale;   // laid-out size
+      const overX = Math.max(0, (w * scale - window.innerWidth) / 2);
+      const overY = Math.max(0, (h * scale - window.innerHeight) / 2);
+      tx = Math.min(overX, Math.max(-overX, tx));
+      ty = Math.min(overY, Math.max(-overY, ty));
+    }
+    function apply(){
+      clamp();
+      img.style.transform = "translate(" + tx + "px," + ty + "px) scale(" + scale + ")";
+      img.style.transformOrigin = "center center";
+    }
+    function zoomTo(next, cx, cy){
+      const prev = scale;
+      scale = Math.min(6, Math.max(1, next));
+      if(scale === 1){ tx = 0; ty = 0; }
+      else if(cx != null){
+        // keep the point under the fingers where it is
+        const k = scale / prev;
+        tx = cx - (cx - tx) * k;
+        ty = cy - (cy - ty) * k;
+      }
+      apply();
+    }
+
+    wrap.addEventListener("pointerdown", (e)=>{
+      if(e.target.closest(".img-zoom-close")) return;
+      try{ wrap.setPointerCapture(e.pointerId); }catch(err){}
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      moved = 0;
+      if(pointers.size === 2){
+        const [a, b] = [...pointers.values()];
+        pinchDist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+        pinchScale = scale;
+        pinchMid = { x: (a.x + b.x) / 2 - window.innerWidth / 2, y: (a.y + b.y) / 2 - window.innerHeight / 2 };
+      } else {
+        panFrom = { x: e.clientX - tx, y: e.clientY - ty };
+      }
+    });
+    wrap.addEventListener("pointermove", (e)=>{
+      const p = pointers.get(e.pointerId);
+      if(!p) return;
+      moved += Math.abs(e.clientX - p.x) + Math.abs(e.clientY - p.y);
+      p.x = e.clientX; p.y = e.clientY;
+      if(pointers.size >= 2){
+        const [a, b] = [...pointers.values()];
+        const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+        zoomTo(pinchScale * (d / pinchDist), pinchMid.x, pinchMid.y);
+      } else if(panFrom && scale > 1){
+        tx = e.clientX - panFrom.x;
+        ty = e.clientY - panFrom.y;
+        apply();
+      }
+    });
+    function release(e){
+      pointers.delete(e.pointerId);
+      if(pointers.size < 2) pinchMid = null;
+      if(pointers.size === 1){
+        const only = [...pointers.values()][0];
+        panFrom = { x: only.x - tx, y: only.y - ty };
+      }
+      if(pointers.size === 0){
+        if(moved < 8){
+          const now = Date.now();
+          if(now - lastTap < 300){          // double tap toggles
+            lastTap = 0;
+            zoomTo(scale > 1.2 ? 1 : 2.5,
+                   e.clientX - window.innerWidth / 2, e.clientY - window.innerHeight / 2);
+          } else {
+            lastTap = now;
+            // a single tap closes, unless it turns out to be the first half
+            // of a double tap
+            setTimeout(()=>{ if(lastTap === now && imgZoomEl === wrap) closeImageZoom(); }, 300);
+          }
+        }
+        panFrom = null;
+      }
+    }
+    wrap.addEventListener("pointerup", release);
+    wrap.addEventListener("pointercancel", release);
+    wrap.querySelector(".img-zoom-close").addEventListener("click", (e)=>{ e.stopPropagation(); closeImageZoom(); });
+    apply();
+  }
+  // the ink canvas sits over the text and takes the taps while drawing, so
+  // this only ever fires when the pen is put away
+  readInner.addEventListener("click", (e)=>{
+    if(penMode || !readerScreenVisible()) return;
+    const img = e.target && e.target.closest && e.target.closest("img");
+    if(img) openImageZoom(img.currentSrc || img.src, img.alt);
+  });
 
   function updateProgress(){
     const el = readScroll;
@@ -3083,7 +3353,9 @@
   async function saveProgress(){
     if(!activeFile) return;
     const pct = updateProgress();
-    activeFile.progress = {chapterIdx, pct, fontSize, theme};
+    const max = readScroll.scrollHeight - readScroll.clientHeight;
+    const frac = max > 0 ? Math.min(1, Math.max(0, readScroll.scrollTop / max)) : 0;
+    activeFile.progress = {chapterIdx, pct, frac, fontSize, theme};
     activeFile.updatedTs = Date.now();
     await persistFiles();
   }
@@ -3122,6 +3394,7 @@
     if(!readerScreenVisible()) return;
     if(e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
     if(e.key==="Escape"){
+      if(imgZoomEl){ closeImageZoom(); return; }
       closeDrawer(); closeSettings(); setPenMode(false);
       return;
     }
@@ -3333,6 +3606,22 @@
   }
   $("fontMinus").addEventListener("click", ()=>{ fontSize -= 1; applyFont(); saveProgress(); });
   $("fontPlus").addEventListener("click", ()=>{ fontSize += 1; applyFont(); saveProgress(); });
+
+  function applyReadStyle(){
+    document.documentElement.style.setProperty("--read-line", String(readLine));
+    document.documentElement.style.setProperty("--read-font",
+      readFamily === "sans" ? "'Noto Sans KR', sans-serif" : "'Noto Serif KR', serif");
+    document.querySelectorAll("#lineRow .seg-btn").forEach(b=> b.classList.toggle("active", Number(b.dataset.line) === readLine));
+    document.querySelectorAll("#familyRow .seg-btn").forEach(b=> b.classList.toggle("active", b.dataset.family === readFamily));
+    // both reflow the text, which is exactly what stroke anchoring is for
+    resizeInkCanvas();
+  }
+  document.querySelectorAll("#lineRow .seg-btn").forEach(b=>{
+    b.addEventListener("click", ()=>{ readLine = Number(b.dataset.line); applyReadStyle(); persistPrefs(); saveProgress(); });
+  });
+  document.querySelectorAll("#familyRow .seg-btn").forEach(b=>{
+    b.addEventListener("click", ()=>{ readFamily = b.dataset.family; applyReadStyle(); persistPrefs(); saveProgress(); });
+  });
 
   function applyTheme(){
     readerScreen.setAttribute("data-theme", theme);
@@ -4068,7 +4357,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "48";
+  const SW_VERSION = "49";
   if("serviceWorker" in navigator){
     // Only reload when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), which makes navigator.serviceWorker.controller
