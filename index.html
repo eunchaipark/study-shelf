@@ -1755,7 +1755,7 @@
       const anchor = e.currentTarget;
       e.stopPropagation();
       closeAllOverlays();
-      $("overlay").classList.add("show");
+      showOverlay();
       const menu = document.createElement("div");
       menu.className = "menu-pop";
       menu.innerHTML =
@@ -2163,7 +2163,13 @@
       || !!document.querySelector(".menu-pop")
       || !!$("modalLayer").firstChild;
   }
-  function syncOverlay(){ $("overlay").classList.toggle("show", overlayIsNeeded()); }
+  function syncOverlay(){ $("overlay").classList.toggle("show", overlayIsNeeded()); syncBackGuard(); }
+  // menus and modals used to switch the backdrop on directly; going through
+  // here lets the back button learn about them too
+  // deferred a tick: every opener switches the backdrop on *before* it
+  // appends its modal or menu, so a check made right now would find nothing
+  // open yet and leave the back button unarmed
+  function showOverlay(){ $("overlay").classList.add("show"); queueMicrotask(syncBackGuard); }
 
   function closeAllOverlays(){
     $("modalLayer").innerHTML = "";
@@ -3091,7 +3097,7 @@
 
   async function openHighlightIndex(){
     closeAllOverlays();
-    $("overlay").classList.add("show");
+    showOverlay();
     const modal = document.createElement("div");
     modal.className = "modal hl-index";
     modal.innerHTML = '<h4>모아본 하이라이트</h4><div class="hl-index-body">불러오는 중…</div>' +
@@ -3146,7 +3152,7 @@
       '<button class="menu-item" id="restoreBtn"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M4 7V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2"/></svg>백업에서 복원</button>';
     document.body.appendChild(menu);
     placeMenu(menu, anchor);
-    $("overlay").classList.add("show");
+    showOverlay();
     $("hlIndexBtn").addEventListener("click", ()=>{ closeAllOverlays(); openHighlightIndex(); });
     $("backupBtn").addEventListener("click", ()=>{ closeAllOverlays(); exportBackup(); });
     $("restoreBtn").addEventListener("click", ()=>{ closeAllOverlays(); $("restoreInput").click(); });
@@ -3155,7 +3161,7 @@
   /* ---------------- new folder modal ---------------- */
   function openNewFolderModal(){
     closeAllOverlays();
-    $("overlay").classList.add("show");
+    showOverlay();
     const parentId = currentParentId();
     const parentLabel = parentId ? folderPathLabel(parentId) : null;
     const modal = document.createElement("div");
@@ -3187,7 +3193,7 @@
   /* ---------------- file kebab menu ---------------- */
   function openFileMenu(anchor, f){
     closeAllOverlays();
-    $("overlay").classList.add("show");
+    showOverlay();
     const menu = document.createElement("div");
     menu.className = "menu-pop";
     menu.innerHTML =
@@ -3217,7 +3223,7 @@
 
   function openRenameModal(f){
     closeAllOverlays();
-    $("overlay").classList.add("show");
+    showOverlay();
     const modal = document.createElement("div");
     modal.className = "modal";
     modal.innerHTML =
@@ -3246,7 +3252,7 @@
 
   function openDeleteModal(f){
     closeAllOverlays();
-    $("overlay").classList.add("show");
+    showOverlay();
     const modal = document.createElement("div");
     modal.className = "modal";
     modal.innerHTML =
@@ -3279,7 +3285,7 @@
   /* ---------------- folder menu (rename / delete) ---------------- */
   function openFolderMenu(anchor, folder){
     closeAllOverlays();
-    $("overlay").classList.add("show");
+    showOverlay();
     const menu = document.createElement("div");
     menu.className = "menu-pop";
     menu.innerHTML =
@@ -3295,7 +3301,7 @@
 
   function openFolderRenameModal(folder){
     closeAllOverlays();
-    $("overlay").classList.add("show");
+    showOverlay();
     const modal = document.createElement("div");
     modal.className = "modal";
     modal.innerHTML =
@@ -3324,7 +3330,7 @@
 
   function openFolderDeleteModal(folder){
     closeAllOverlays();
-    $("overlay").classList.add("show");
+    showOverlay();
     const descIds = new Set(descendantFolderIds(folder.id));
     const affectedFiles = files.filter(f=> f.folderId && descIds.has(f.folderId)).length;
     const hasSubfolders = descIds.size > 1;
@@ -3394,6 +3400,7 @@
     readerScreen.classList.add("hidden");
     editorScreen.classList.remove("hidden");
     editorTextarea.focus();
+    syncBackGuard();
   }
   // discard path (back button, nothing saved) — storage is unchanged, so
   // just reveal whichever screen was showing before, no reload needed
@@ -3406,6 +3413,7 @@
       libraryScreen.classList.remove("hidden");
       renderAll();
     }
+    syncBackGuard();
   }
   function editorIsDirty(){
     return editorTextarea.value !== editorOriginalText || editorTitleInput.value !== editorOriginalTitle;
@@ -3591,6 +3599,7 @@
     } else {
       libraryScreen.classList.remove("hidden");
       renderAll();
+      syncBackGuard();
     }
   }
   $("editorSaveBtn").addEventListener("click", saveEditorFile);
@@ -3881,6 +3890,7 @@
     libraryScreen.classList.add("hidden");
     readerScreen.classList.remove("hidden");
     setPenMode(false);
+    syncBackGuard();
     // tablet+: TOC panel defaults open (it's a side panel, not an overlay);
     // phones keep the drawer closed until the user taps the toc button
     if(isTabletUp()) openDrawer(); else closeDrawer();
@@ -4028,6 +4038,7 @@
     imgZoomEl = null;
     el.classList.remove("show");
     setTimeout(()=>{ if(el.parentNode) el.remove(); }, 200);
+    syncBackGuard();
   }
   function openImageZoom(src, alt){
     if(!src || imgZoomEl) return;
@@ -4042,6 +4053,7 @@
     img.alt = alt || "";
     document.body.appendChild(wrap);
     imgZoomEl = wrap;
+    syncBackGuard();
     requestAnimationFrame(()=> wrap.classList.add("show"));
 
     let scale = 1, tx = 0, ty = 0;
@@ -4188,12 +4200,17 @@
     });
   }
 
-  $("backBtn").addEventListener("click", ()=>{
-    setPenMode(false);
+  function leaveReader(){
+    // hide first: setPenMode consults the back guard, and with the reader
+    // still showing it would arm a sentinel only for the next line to take
+    // it straight back off again
     readerScreen.classList.add("hidden");
     libraryScreen.classList.remove("hidden");
+    setPenMode(false);
     renderAll();
-  });
+    syncBackGuard();
+  }
+  $("backBtn").addEventListener("click", leaveReader);
   $("prevBtn").addEventListener("click", ()=> goChapter(-1));
   $("nextBtn").addEventListener("click", ()=> goChapter(1));
 
@@ -4299,7 +4316,7 @@
         drawer.style.width = clamped + "px";
       } else {
         drawer.style.transform = "translateX(" + (clamped - maxW) + "px)";
-        $("overlay").classList.add("show");
+        showOverlay();
         $("overlay").style.opacity = String(clamped / maxW);
       }
     }
@@ -5299,6 +5316,7 @@
     if(inkCanvas) inkCanvas.classList.toggle("inactive", !penMode);
     if(on){ closeSettings(); if(!isTabletUp()) closeDrawer(); openInkPop(); }
     else { closeInkPop(); hideInkCursor(); }
+    syncBackGuard();
   }
   // no shared #overlay here on purpose: it sits above the ink canvas
   // (z-index 50 vs 5) and would silently block every drawing gesture
@@ -5391,6 +5409,66 @@
     if(e.propertyName === "width" && readerScreenVisible()) resizeInkCanvas();
   });
 
+  /* ---------------- the hardware back button ------------------------------
+     A single-page app has no history of its own, so the phone's back button
+     — the most reflexive gesture there is — had exactly one thing it could
+     do: leave. Pressing it while reading closed the app.
+
+     One sentinel entry is kept on the history stack for as long as anything
+     is open that back should close (a modal, the tool sheet, pen mode, the
+     TOC, the editor, the reader itself). Consuming it closes the topmost of
+     those, and if something is still open the sentinel is pushed again, so
+     the next press closes the next thing. When the last one closes — by
+     back or by its own button — the sentinel is taken back off, so from the
+     shelf a single press leaves the app the way it always did. */
+  let backGuardArmed = false;   // is our sentinel on the stack right now
+  let backGuardSkip = false;    // we called history.back() ourselves: ignore that popstate
+
+  // whatever is open, topmost first, each with the way to close it
+  function backTargets(){
+    const out = [];
+    if(imgZoomEl) out.push(closeImageZoom);
+    if($("modalLayer").firstChild || document.querySelector(".menu-pop")) out.push(closeAllOverlays);
+    if(settingsPop.classList.contains("show")) out.push(closeSettings);
+    if(penMode) out.push(()=> setPenMode(false));
+    if(drawer.classList.contains("show") && !isTabletUp()) out.push(closeDrawer);
+    if(!editorScreen.classList.contains("hidden")) out.push(()=>{
+      if(editorIsDirty() && !confirm("저장하지 않은 내용이 있어요. 나가시겠어요?")) return;
+      closeEditor();
+    });
+    else if(readerScreenVisible()) out.push(leaveReader);
+    return out;
+  }
+
+  function syncBackGuard(){
+    let open;
+    try{ open = backTargets().length > 0; }catch(e){ return; }   // called before the reader is wired up
+    if(open && !backGuardArmed){
+      backGuardArmed = true;
+      try{ history.pushState({ ss: 1 }, ""); }catch(e){}
+    } else if(!open && backGuardArmed){
+      backGuardArmed = false;
+      backGuardSkip = true;
+      try{ history.back(); }catch(e){ backGuardSkip = false; }
+    }
+  }
+
+  window.addEventListener("popstate", ()=>{
+    if(backGuardSkip){ backGuardSkip = false; return; }
+    backGuardArmed = false;                       // the sentinel was just consumed
+    const targets = backTargets();
+    if(!targets.length) return;                   // nothing to close: let the browser leave
+    targets[0]();
+    syncBackGuard();                              // re-arm if there is more to close
+  });
+
+  // a sentinel left behind by a reload has no state behind it any more —
+  // take it off so the first press after a reload is not a dead one
+  if(history.state && history.state.ss){
+    backGuardSkip = true;
+    try{ history.back(); }catch(e){ backGuardSkip = false; }
+  }
+
   /* ---------------- PWA: service worker registration ---------------- */
   // GitHub Pages serves sw.js with Cache-Control: max-age=600, so a plain
   // "./sw.js" registration can keep re-checking a stale cached copy for up
@@ -5398,7 +5476,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "60";
+  const SW_VERSION = "61";
   if("serviceWorker" in navigator){
     // Only offer when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), so controller becomes non-null right
