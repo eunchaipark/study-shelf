@@ -777,6 +777,8 @@
   .sw-night{background:#131418; color:#e6e6e2;}
   .sw-custom{background:var(--sw-custom-bg, #faf9f6); color:var(--sw-custom-text, #1d1e21);}
   .custom-theme-row{display:flex; gap:18px; margin-top:12px;}
+  .pop-foot-btn{width:100%; justify-content:center; margin-top:18px; padding:9px 10px; font-size:12.5px;}
+  .pop-foot-btn .icon{width:15px; height:15px;}
   .color-pick-label{display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--text-500); font-weight:600;}
   .color-pick-label input[type="color"]{
     width:28px; height:28px; border-radius:8px; border:1px solid var(--line-strong); padding:0; background:none; cursor:pointer;
@@ -1079,9 +1081,6 @@
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
       </button>
       <button class="icon-btn" id="penBtn" aria-label="필기"></button>
-      <button class="icon-btn" id="readerEditBtn" aria-label="편집">
-        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
-      </button>
       <div class="title" id="bookTitleTop">제목</div>
       <div class="progress-pct" id="progressPct">0%</div>
       <button class="icon-btn aa-btn" id="settingsBtn" aria-label="설정">Aa</button>
@@ -1219,6 +1218,12 @@
               <input type="color" id="customTextInput" value="#1d1e21">
             </label>
           </div>
+          <!-- editing is a once-in-a-while thing, so it lives here rather
+               than as a standing icon in the top bar -->
+          <button class="btn btn-ghost pop-foot-btn" id="readerEditBtn">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
+            본문 편집
+          </button>
         </div>
 
 
@@ -3712,7 +3717,7 @@
   }
   $("editorSaveBtn").addEventListener("click", saveEditorFile);
   $("newFileBtn").addEventListener("click", ()=> openEditor(null));
-  $("readerEditBtn").addEventListener("click", ()=>{ if(activeFile) openEditor(activeFile); });
+  $("readerEditBtn").addEventListener("click", ()=>{ closeSettings(); if(activeFile) openEditor(activeFile); });
 
   // desktop split view: drag the handle to change the source/preview ratio,
   // by setting each pane's flex-basis directly (both start at flex:1, i.e.
@@ -4872,11 +4877,8 @@
   let inkActiveStylusId = null;   // palm rejection: pointerId of the stylus currently down
   let inkLastPenActivityTs = 0;   // palm rejection: ignore touch shortly after/around pen use
   let inkRedoStack = [];          // per-chapter; a fresh stroke clears it, like any undo/redo stack
-  let inkTouchPointers = new Map(); // touch pointerId -> last clientY, for two-finger-scroll detection
-  let inkMultiTouchActive = false;  // sticky until every finger lifts, so 2->1 finger mid-gesture doesn't suddenly draw
-  let inkPanLastCentroidY = null;
-  let inkPanStart = null;           // centroid where the two-finger gesture began
-  let inkPanHorizontal = false;     // once decided, a sideways two-finger drag turns the page instead of panning
+  // the two-finger gesture (scroll, or a sideways page turn) while the pen is out
+  let inkGesture = null;            // { lastX, lastY, dx, dy, horizontal, fingers } — sticky until every finger lifts
   let inkLastLoggedButtons = null;  // last-seen button bits, so the log only fires on a change
 
   function inkKey(){ return activeFile ? "ink:"+activeFile.id+":"+chapterIdx : null; }
@@ -5274,37 +5276,78 @@
   }
   function hideInkCursor(){ if(inkCursorEl) inkCursorEl.style.display = "none"; }
 
-  function inkTouchCentroidY(){
-    let sum=0, n=0;
-    inkTouchPointers.forEach(p=>{ sum+=p.y; n++; });
-    return n ? sum/n : null;
+  /* Two fingers, while the pen is out. One finger draws, so two are the
+     hand: dragged up or down they scroll, dragged clearly sideways they
+     turn the page, with the column following the fingers a little so the
+     gesture can be seen taking.
+
+     This runs on touch events rather than pointer events: a touch event
+     carries every finger that is down, so there is no per-pointer
+     bookkeeping to get out of step — a pointerup that never reached the
+     canvas (the finger wandered off it, or the browser cancelled that one
+     pointer when the second landed) used to leave a phantom finger behind
+     and the gesture dead until the next reload. */
+  function inkTouchCentroid(touches){
+    let x=0, y=0;
+    for(let i=0;i<touches.length;i++){ x+=touches[i].clientX; y+=touches[i].clientY; }
+    return { x: x/touches.length, y: y/touches.length };
   }
-  function inkTouchCentroidX(){
-    let sum=0, n=0;
-    inkTouchPointers.forEach(p=>{ sum+=p.x; n++; });
-    return n ? sum/n : null;
+  const INK_TURN_DOMINANCE = 1.5;   // sideways at least this many times the up-and-down before it is a turn
+  function inkTurnThreshold(){ return Math.max(80, window.innerWidth * 0.22); }
+  function inkGesturePreview(dx){
+    // the column leans with the fingers; a quarter of the drag is enough to feel it
+    readInner.style.transition = "none";
+    readInner.style.transform = dx ? "translateX(" + Math.round(dx * 0.25) + "px)" : "";
   }
-  // A second finger landing mid-gesture means "scroll", not "draw" — abort
-  // whatever single-finger mark had already started (the brief gap before
-  // the second finger arrives can leave a stray dot/short line otherwise)
-  // and stay in scroll mode until every finger lifts, so 2->1 finger while
-  // panning doesn't suddenly resume drawing.
-  function endInkTouch(pointerId){
-    const wasMulti = inkMultiTouchActive;
-    const lastX = inkTouchCentroidX();
-    inkTouchPointers.delete(pointerId);
-    if(inkTouchPointers.size===0){
-      // With the pen out, one finger draws, so the page-turn swipe is done
-      // with two: a clearly sideways two-finger drag of a third of the
-      // screen turns the page, anything else was a scroll.
-      if(wasMulti && inkPanHorizontal && inkPanStart && lastX !== null){
-        const dx = lastX - inkPanStart.x;
-        if(Math.abs(dx) > Math.max(96, window.innerWidth * 0.3)) goChapter(dx < 0 ? 1 : -1);
-      }
-      inkMultiTouchActive = false; inkPanLastCentroidY = null; inkPanStart = null; inkPanHorizontal = false;
+  function inkGestureRelease(turning){
+    if(turning){ readInner.style.transition = ""; readInner.style.transform = ""; return; }
+    readInner.style.transition = "transform .18s var(--ease)";
+    readInner.style.transform = "";
+    setTimeout(()=>{ readInner.style.transition = ""; }, 220);
+  }
+  readScroll.addEventListener("touchstart", (e)=>{
+    if(!penMode || e.touches.length < 2) return;
+    // A second finger landing mid-stroke means "hand", not "draw": drop the
+    // dot or short line the first finger left in the moment before it.
+    if(inkDrawing){ inkDrawing = null; inkActivePointerId = null; redrawInk(); }
+    const c = inkTouchCentroid(e.touches);
+    if(!inkGesture) inkGesture = { lastX: c.x, lastY: c.y, dx: 0, dy: 0, horizontal: false };
+    else { inkGesture.lastX = c.x; inkGesture.lastY = c.y; }   // a third finger: no jump
+    if(e.cancelable) e.preventDefault();
+  }, { passive: false });
+  readScroll.addEventListener("touchmove", (e)=>{
+    if(!inkGesture) return;
+    if(e.cancelable) e.preventDefault();
+    const c = inkTouchCentroid(e.touches);
+    const mx = c.x - inkGesture.lastX, my = c.y - inkGesture.lastY;
+    inkGesture.lastX = c.x; inkGesture.lastY = c.y;
+    inkGesture.dx += mx; inkGesture.dy += my;
+    // decide the axis once there is enough movement to tell; once sideways,
+    // stop scrolling so the page does not wobble under the turn
+    if(!inkGesture.horizontal && Math.abs(inkGesture.dx) > 20 && Math.abs(inkGesture.dx) > Math.abs(inkGesture.dy) * INK_TURN_DOMINANCE){
+      inkGesture.horizontal = true;
     }
-    else if(inkMultiTouchActive){ inkPanLastCentroidY = inkTouchCentroidY(); } // avoid a jump when the touch count changes
-  }
+    if(inkGesture.horizontal){ inkGesturePreview(inkGesture.dx); return; }
+    // .read-scroll has scroll-behavior:smooth for deliberate jumps; that
+    // would animate every one of these per-frame drags, so bypass it
+    if(my) readScroll.scrollTo({ top: readScroll.scrollTop - my, behavior: "instant" });
+  }, { passive: false });
+  const inkGestureEnd = (e)=>{
+    if(!inkGesture) return;
+    if(e.touches.length > 0){
+      // a finger lifted but not the last: carry on from the new centroid
+      const c = inkTouchCentroid(e.touches);
+      inkGesture.lastX = c.x; inkGesture.lastY = c.y;
+      return;
+    }
+    const g = inkGesture;
+    inkGesture = null;
+    const turn = g.horizontal && Math.abs(g.dx) > inkTurnThreshold() && e.type !== "touchcancel";
+    inkGestureRelease(turn);
+    if(turn) goChapter(g.dx < 0 ? 1 : -1);
+  };
+  readScroll.addEventListener("touchend", inkGestureEnd, { passive: true });
+  readScroll.addEventListener("touchcancel", inkGestureEnd, { passive: true });
 
   // Pointer Events' button-bit convention for a stylus barrel button is
   // inconsistent across Android/Samsung builds (and some intercept the
@@ -5330,14 +5373,7 @@
     inkCanvas.addEventListener("pointerdown", (e)=>{
       if(!penMode) return;
       if(e.pointerType==="touch"){
-        inkTouchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-        if(inkTouchPointers.size>=2) inkMultiTouchActive = true;
-        if(inkMultiTouchActive){
-          if(inkDrawing){ inkDrawing = null; inkActivePointerId = null; redrawInk(); }
-          inkPanLastCentroidY = inkTouchCentroidY();
-          if(!inkPanStart){ inkPanStart = { x: inkTouchCentroidX(), y: inkPanLastCentroidY }; inkPanHorizontal = false; }
-          return;
-        }
+        if(inkGesture) return;   // two fingers are down: this one is the hand, not the pen
         // Palm rejection: while (or just after) a stylus is in contact,
         // ignore touch input entirely so a resting palm doesn't leave stray marks.
         const recentPen = Date.now()-inkLastPenActivityTs < 700;
@@ -5358,31 +5394,7 @@
     });
     inkCanvas.addEventListener("pointermove", (e)=>{
       if(!penMode) return;
-      if(e.pointerType==="touch" && inkTouchPointers.has(e.pointerId)){
-        inkTouchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-        if(inkMultiTouchActive){
-          e.preventDefault();
-          const centroidY = inkTouchCentroidY();
-          // decide the gesture's axis once it has moved enough to tell, and
-          // once sideways, stop panning so the page doesn't wobble under it
-          if(inkPanStart && !inkPanHorizontal){
-            const dx = inkTouchCentroidX() - inkPanStart.x, dy = centroidY - inkPanStart.y;
-            if(Math.abs(dx) > 24 && Math.abs(dx) > Math.abs(dy) * 2) inkPanHorizontal = true;
-          }
-          if(inkPanHorizontal){ inkPanLastCentroidY = centroidY; return; }
-          // .read-scroll has scroll-behavior:smooth for programmatic jumps
-          // (chapter change, TOC nav) — that also applies to plain scrollTop
-          // writes, so every one of these per-frame drag updates was
-          // launching its own catch-up animation and stomping on the last,
-          // which is exactly what read as laggy/rubber-bandy. scrollTo with
-          // behavior:"instant" bypasses it for just this real-time drag.
-          if(inkPanLastCentroidY!==null){
-            readScroll.scrollTo({ top: readScroll.scrollTop - (centroidY - inkPanLastCentroidY), behavior: "instant" });
-          }
-          inkPanLastCentroidY = centroidY;
-          return;
-        }
-      }
+      if(e.pointerType==="touch" && inkGesture) return;   // the hand is scrolling or turning the page
       if(e.pointerType==="pen"){
         inkLastPenActivityTs = Date.now();
         if(e.buttons !== inkLastLoggedButtons){ inkDebugLog("pen move: button="+e.button+" buttons="+e.buttons); inkLastLoggedButtons = e.buttons; }
@@ -5438,7 +5450,6 @@
       if(isHighlighter && moved) scheduleHighlightPreview();
     });
     const endStroke = (e)=>{
-      if(e && e.pointerType==="touch") endInkTouch(e.pointerId);
       if(e && e.pointerType==="pen"){
         inkDebugLog("pen up ("+e.type+"): button="+e.button+" buttons="+e.buttons+" committedTool="+(inkDrawing&&inkDrawing.tool));
         inkLastLoggedButtons = null;
@@ -5465,7 +5476,6 @@
     inkCanvas.addEventListener("pointerup", endStroke);
     inkCanvas.addEventListener("pointercancel", endStroke);
     inkCanvas.addEventListener("pointerleave", (e)=>{
-      if(e.pointerType==="touch") endInkTouch(e.pointerId);
       if(e.pointerId===inkActivePointerId) endStroke(e);
       hideInkCursor();
     });
@@ -5719,7 +5729,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "63";
+  const SW_VERSION = "64";
   if("serviceWorker" in navigator){
     // Only offer when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), so controller becomes non-null right
