@@ -601,6 +601,13 @@
   :root[data-turn="off"] .read-inner.turn-next,
   :root[data-turn="off"] .read-inner.turn-prev{animation:none;}
 
+  /* Reading is the one activity where every pixel of height matters, and
+     the top bar and chapter nav together take ~110px of a phone's screen
+     for the entire time. A tap on the page hides them; another brings them
+     back. Touch only — on a desktop nothing is fighting for the height. */
+  #readerScreen.chrome-hidden .topbar,
+  #readerScreen.chrome-hidden .chapternav{display:none;}
+
   .read-scroll{flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; background:var(--read-bg, var(--bg-app)); scroll-behavior:smooth;}
   .read-inner{
     position:relative; max-width:min(680px, 92vw); margin:0 auto; padding:44px 6px 96px;
@@ -777,7 +784,36 @@
   .color-pick-label input[type="color"]::-webkit-color-swatch-wrapper{padding:2px;}
   .color-pick-label input[type="color"]::-webkit-color-swatch{border:none; border-radius:5px;}
 
-  .ink-pop{left:10px; right:auto;}
+  /* The pen's tools used to float over the top-left of the page as a
+     400px card; the page tap that dismissed it was also the only way to get
+     the text back, after which the tools were simply gone. They are a strip
+     in the flow now — the page moves down to make room and nothing is ever
+     covered — and they stay for as long as the pen is out. */
+  .ink-bar{
+    display:none; flex:0 0 auto; flex-direction:column; gap:6px;
+    padding:7px 10px 8px; background:var(--surface); border-bottom:1px solid var(--line);
+  }
+  .ink-bar.show{display:flex;}
+  .ink-bar-row{display:flex; align-items:center; gap:7px; overflow-x:auto; scrollbar-width:none;}
+  .ink-bar-row::-webkit-scrollbar{display:none;}
+  .ink-bar .ink-swatch{width:26px; height:26px; border-width:2px;}
+  .ink-bar .ink-swatch.ink-highlighter{width:30px; height:17px; border-radius:5px;}
+  .ink-bar .ink-swatch.ink-eraser .icon{width:14px; height:14px;}
+  .ink-bar .ink-size-btn{flex:0 0 auto; width:34px; height:30px;}
+  .ink-sep{width:1px; height:20px; background:var(--line-strong); flex:0 0 auto; margin:0 2px;}
+  .ink-spacer{flex:1;}
+  .ink-act{
+    display:flex; align-items:center; gap:5px; height:30px; padding:0 8px; flex:0 0 auto;
+    border-radius:var(--r-sm); border:1px solid var(--line-strong); background:var(--surface);
+    color:var(--text-700); font-family:inherit; font-size:12.5px; font-weight:600;
+    transition:background-color .15s var(--ease), color .15s var(--ease), border-color .15s var(--ease);
+  }
+  .ink-act .icon{width:16px; height:16px;}
+  .ink-act:disabled{opacity:.35;}
+  .ink-act:not(:disabled):active{background:var(--bg-sunken);}
+  @media (hover:hover) and (pointer:fine){ .ink-act:not(:disabled):hover{background:var(--bg-sunken);} }
+  .ink-act.danger{color:var(--danger);}
+  .ink-act.done{color:var(--accent-500); border-color:var(--accent-400); background:var(--accent-wash);}
   .ink-row{display:flex; align-items:center; gap:9px; margin-bottom:18px; flex-wrap:wrap;}
   .ink-swatch{width:30px; height:30px; border-radius:50%; border:2px solid transparent; background:var(--sw); position:relative; flex:0 0 auto; padding:0;}
   .ink-swatch.active{box-shadow:0 0 0 2px var(--surface), 0 0 0 4px var(--text-700);}
@@ -803,8 +839,7 @@
   .ink-actions-row .btn .icon{width:15px; height:15px;}
   .ink-actions-row .btn:disabled{opacity:.4; pointer-events:none;}
   .ink-size-btn.active{border-color:var(--accent-400); color:var(--accent-500); background:var(--accent-wash);}
-  .ink-done-btn{width:100%; justify-content:center; margin-top:14px; color:var(--accent-500); border-color:var(--accent-400);}
-  .ink-clear-btn{width:100%; justify-content:center; margin-top:8px;}
+
 
   /* ============ EDITOR SCREEN ============ */
   #editorScreen{background:var(--bg-app);}
@@ -927,6 +962,7 @@
     .account-sync-dot, .account-error-dot{width:9px; height:9px; border-width:1.5px;}
 
     .topbar{gap:1px; padding:5px 6px; padding-top:calc(5px + env(safe-area-inset-top));}
+    .read-inner{padding-top:24px;}
     .icon-btn{width:34px; height:34px;}
     .icon-btn .icon{width:18px; height:18px;}
     .topbar .title{font-size:13px;}
@@ -943,10 +979,6 @@
     <div class="lib-topbar">
       <div class="lib-brand">Study Shelf</div>
       <div class="lib-spacer"></div>
-      <button class="btn btn-ghost" id="newFolderBtn">
-        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/><path d="M12 11v4M10 13h4"/></svg>
-        <span class="btn-label">새 폴더</span>
-      </button>
       <button class="btn btn-ghost" id="newFileBtn">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6"/><path d="M9.5 14.5h5M12 12v5"/></svg>
         <span class="btn-label">새 파일</span>
@@ -978,7 +1010,6 @@
           <option value="added">추가된 순</option>
           <option value="progress">진행률순</option>
         </select>
-        <button class="search-toggle-btn ui-theme-btn" id="uiThemeBtn" aria-label="화면 테마"></button>
         <button class="search-toggle-btn ui-theme-btn" id="libMoreBtn" aria-label="더보기" title="백업/복원">
           <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
         </button>
@@ -1041,6 +1072,46 @@
       </div>
 
       <div class="reader-main">
+        <!-- pen tools: a strip in the flow above the page, not a card over it.
+             Kept as #inkPop so the existing open/close and every control id
+             carry on unchanged. -->
+        <div class="ink-bar" id="inkPop" role="toolbar" aria-label="필기 도구">
+          <div class="ink-bar-row">
+            <button class="ink-swatch active" data-ink-color="#3F3A34" style="--sw:#3F3A34" aria-label="검정 펜"></button>
+            <button class="ink-swatch" data-ink-color="#C97A45" style="--sw:#C97A45" aria-label="주황 펜"></button>
+            <button class="ink-swatch" data-ink-color="#7C8FA6" style="--sw:#7C8FA6" aria-label="파랑 펜"></button>
+            <button class="ink-swatch" data-ink-color="#B4574E" style="--sw:#B4574E" aria-label="빨강 펜"></button>
+            <span class="ink-sep"></span>
+            <button class="ink-swatch ink-highlighter" data-ink-highlight="#F4C84A" style="--sw:#F4C84A" aria-label="노랑 형광펜"></button>
+            <button class="ink-swatch ink-highlighter" data-ink-highlight="#8FCB8A" style="--sw:#8FCB8A" aria-label="초록 형광펜"></button>
+            <button class="ink-swatch ink-highlighter" data-ink-highlight="#EE9DBB" style="--sw:#EE9DBB" aria-label="분홍 형광펜"></button>
+            <button class="ink-swatch ink-highlighter" data-ink-highlight="#8FB6E3" style="--sw:#8FB6E3" aria-label="파랑 형광펜"></button>
+            <span class="ink-sep"></span>
+            <button class="ink-swatch ink-eraser" id="inkEraserBtn" aria-label="지우개">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20H8l-5-5a2 2 0 0 1 0-2.8l9-9a2 2 0 0 1 2.8 0l5.2 5.2a2 2 0 0 1 0 2.8L13 18"/></svg>
+            </button>
+          </div>
+          <div class="ink-bar-row">
+            <button class="ink-size-btn" data-ink-size="2.5" aria-label="가는 선"><span class="dot" style="width:5px;height:5px;"></span></button>
+            <button class="ink-size-btn active" data-ink-size="4.5" aria-label="보통 선"><span class="dot" style="width:9px;height:9px;"></span></button>
+            <button class="ink-size-btn" data-ink-size="8" aria-label="굵은 선"><span class="dot" style="width:14px;height:14px;"></span></button>
+            <span class="ink-sep"></span>
+            <button class="ink-act" id="inkUndoBtn" disabled aria-label="되돌리기" title="되돌리기">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5A5.5 5.5 0 0 1 20 14.5v0A5.5 5.5 0 0 1 14.5 20H11"/></svg>
+            </button>
+            <button class="ink-act" id="inkRedoBtn" disabled aria-label="다시하기" title="다시하기">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14l5-5-5-5"/><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5v0A5.5 5.5 0 0 0 9.5 20H13"/></svg>
+            </button>
+            <button class="ink-act danger" id="inkClearBtn" aria-label="전체 지우기" title="전체 지우기">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>
+            </button>
+            <span class="ink-spacer"></span>
+            <button class="ink-act done" id="inkDoneBtn" aria-label="필기 끝내기" title="필기 끝내기">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
+              <span>끝내기</span>
+            </button>
+          </div>
+        </div>
         <div class="read-scroll" id="readScroll">
           <div class="read-inner" id="readInner"></div>
         </div>
@@ -1098,46 +1169,7 @@
           </div>
         </div>
 
-        <div class="pop ink-pop" id="inkPop">
-          <h5>펜</h5>
-          <div class="ink-row">
-            <button class="ink-swatch active" data-ink-color="#3F3A34" style="--sw:#3F3A34" aria-label="검정 펜"></button>
-            <button class="ink-swatch" data-ink-color="#C97A45" style="--sw:#C97A45" aria-label="주황 펜"></button>
-            <button class="ink-swatch" data-ink-color="#7C8FA6" style="--sw:#7C8FA6" aria-label="파랑 펜"></button>
-            <button class="ink-swatch" data-ink-color="#B4574E" style="--sw:#B4574E" aria-label="빨강 펜"></button>
-            <button class="ink-swatch ink-eraser" id="inkEraserBtn" aria-label="지우개">
-              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20H8l-5-5a2 2 0 0 1 0-2.8l9-9a2 2 0 0 1 2.8 0l5.2 5.2a2 2 0 0 1 0 2.8L13 18"/></svg>
-            </button>
-          </div>
-          <h5>형광펜</h5>
-          <div class="ink-row">
-            <button class="ink-swatch ink-highlighter" data-ink-highlight="#F4C84A" style="--sw:#F4C84A" aria-label="노랑 형광펜"></button>
-            <button class="ink-swatch ink-highlighter" data-ink-highlight="#8FCB8A" style="--sw:#8FCB8A" aria-label="초록 형광펜"></button>
-            <button class="ink-swatch ink-highlighter" data-ink-highlight="#EE9DBB" style="--sw:#EE9DBB" aria-label="분홍 형광펜"></button>
-            <button class="ink-swatch ink-highlighter" data-ink-highlight="#8FB6E3" style="--sw:#8FB6E3" aria-label="파랑 형광펜"></button>
-          </div>
-          <h5>굵기</h5>
-          <div class="ink-size-row">
-            <button class="ink-size-btn" data-ink-size="2.5"><span class="dot" style="width:6px;height:6px;"></span></button>
-            <button class="ink-size-btn active" data-ink-size="4.5"><span class="dot" style="width:10px;height:10px;"></span></button>
-            <button class="ink-size-btn" data-ink-size="8"><span class="dot" style="width:15px;height:15px;"></span></button>
-          </div>
-          <div class="ink-actions-row">
-            <button class="btn btn-ghost" id="inkUndoBtn" disabled>
-              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5A5.5 5.5 0 0 1 20 14.5v0A5.5 5.5 0 0 1 14.5 20H11"/></svg>
-              되돌리기
-            </button>
-            <button class="btn btn-ghost" id="inkRedoBtn" disabled>
-              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14l5-5-5-5"/><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5v0A5.5 5.5 0 0 0 9.5 20H13"/></svg>
-              다시하기
-            </button>
-          </div>
-          <button class="btn btn-ghost ink-done-btn" id="inkDoneBtn">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
-            필기 끝내기
-          </button>
-          <button class="btn btn-ghost ink-clear-btn" id="inkClearBtn">전체 지우기</button>
-        </div>
+
       </div>
     </div>
   </section>
@@ -2231,7 +2263,7 @@
     toastTimer = setTimeout(()=>{ el.classList.remove("show"); setTimeout(()=>{ if(el.parentNode) el.remove(); }, 250); }, actionLabel ? 12000 : 5000);
   }
   $("overlay").addEventListener("click", closeAllOverlays);
-  $("newFolderBtn").addEventListener("click", ()=> openNewFolderModal());
+
 
   /* ---------------- folder tree helpers ---------------- */
   function currentParentId(){ return folderPath.length ? folderPath[folderPath.length-1] : null; }
@@ -2393,12 +2425,15 @@
 
     const add = document.createElement("button");
     add.className = "folder-chip new";
-    add.textContent = "+ 폴더";
+    // a bare "+" fits the phone's single scrolling row; the sidebar has room
+    add.textContent = isTabletUp() ? "+ 새 폴더" : "+";
+    add.setAttribute("aria-label", "새 폴더");
+    add.title = "새 폴더";
     add.addEventListener("click", ()=> openNewFolderModal());
-    pinned.appendChild(add);
     rail.appendChild(pinned);
 
     if(searchQuery.trim()){
+      pinned.appendChild(add);
       const note = document.createElement("div");
       note.className = "rail-crumbs";
       const label = document.createElement("button");
@@ -2418,7 +2453,23 @@
     // tree doesn't suit — keep the existing one-level-at-a-time breadcrumb
     // drill-down there instead.
     if(isTabletUp()){
+      pinned.appendChild(add);
       rail.appendChild(renderFolderTree());
+      return;
+    }
+
+    // At the root the shelf used to stack three rows — the pinned filters,
+    // a breadcrumb that read only "서재", and the folders — before the first
+    // book appeared. The breadcrumb carried nothing at the root and the
+    // folders fit on the pinned row, so the root is one scrolling row now.
+    // Inside a folder the crumb earns its place and the layout below stays.
+    // At the root, browsing shows exactly the files 미분류 shows (the ones
+    // in no folder), so a "서재" crumb to get back to browsing would be a
+    // way back to the same thing. One row, whichever filter is on.
+    const kids = childFolders(folderPath.length ? currentParentId() : null);
+    if(folderPath.length === 0){
+      kids.forEach(fo=> pinned.appendChild(folderChip(fo)));
+      pinned.appendChild(add);
       return;
     }
 
@@ -2457,19 +2508,18 @@
     });
     rail.appendChild(crumbs);
 
-    const kids = childFolders(currentParentId());
-    if(kids.length){
-      const kidsRow = document.createElement("div");
-      kidsRow.className = "rail-row";
-      kids.forEach(fo=>{
-        const chip = document.createElement("button");
-        chip.className = "folder-chip";
-        chip.innerHTML = escapeHtml(fo.name) + " <span class=\"count\">"+folderFileCount(fo.id)+"</span>";
-        chip.addEventListener("click", ()=>{ libView="browse"; folderPath = [...folderPath, fo.id]; renderAll(); });
-        kidsRow.appendChild(chip);
-      });
-      rail.appendChild(kidsRow);
-    }
+    const kidsRow = document.createElement("div");
+    kidsRow.className = "rail-row";
+    kids.forEach(fo=> kidsRow.appendChild(folderChip(fo)));
+    kidsRow.appendChild(add);
+    rail.appendChild(kidsRow);
+  }
+  function folderChip(fo){
+    const chip = document.createElement("button");
+    chip.className = "folder-chip";
+    chip.innerHTML = escapeHtml(fo.name) + " <span class=\"count\">"+folderFileCount(fo.id)+"</span>";
+    chip.addEventListener("click", ()=>{ libView="browse"; folderPath = [...folderPath, fo.id]; renderAll(); });
+    return chip;
   }
 
   /* ---------------- folder tree (tablet/desktop) ---------------- */
@@ -2910,22 +2960,16 @@
     document.documentElement.dataset.ui = resolved;
     const meta = document.querySelector('meta[name="theme-color"]');
     if(meta) meta.setAttribute("content", resolved === "dark" ? "#16140F" : "#F7F5F2");
-    const btn = $("uiThemeBtn");
-    if(btn){
-      btn.innerHTML = UI_ICONS[uiTheme];
-      btn.title = UI_LABELS[uiTheme];
-      btn.setAttribute("aria-label", UI_LABELS[uiTheme]);
-      btn.classList.toggle("active", uiTheme !== "auto");
-    }
+
   }
   if(darkQuery && darkQuery.addEventListener){
     darkQuery.addEventListener("change", ()=>{ if(uiTheme === "auto") applyUiTheme(); });
   }
-  $("uiThemeBtn").addEventListener("click", ()=>{
+  function cycleUiTheme(){
     uiTheme = UI_ORDER[(UI_ORDER.indexOf(uiTheme) + 1) % UI_ORDER.length];
     try{ localStorage.setItem("uiTheme", uiTheme); }catch(e){}
     applyUiTheme();
-  });
+  }
 
   function updateDensityButtons(){
     document.querySelectorAll(".density-btn").forEach(b=> b.classList.toggle("active", b.dataset.density===density));
@@ -3145,6 +3189,8 @@
     const menu = document.createElement("div");
     menu.className = "menu-pop";
     menu.innerHTML =
+      '<button class="menu-item" id="uiThemeMenuBtn"></button>'+
+      '<div class="menu-divider"></div>'+
       '<button class="menu-item" id="backupBtn"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>전체 백업 저장</button>'+
       '<button class="menu-item" id="hlIndexBtn"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h10M4 18h7"/><path d="m15.5 17.5 2 2 4-4"/></svg>하이라이트 모아보기</button>'+
       '<div class="menu-divider"></div>'+
@@ -3153,6 +3199,16 @@
     document.body.appendChild(menu);
     placeMenu(menu, anchor);
     showOverlay();
+    const paintThemeItem = ()=>{
+      $("uiThemeMenuBtn").innerHTML = UI_ICONS[uiTheme] + UI_LABELS[uiTheme];
+    };
+    paintThemeItem();
+    // cycles in place so you can see what you picked without reopening
+    $("uiThemeMenuBtn").addEventListener("click", (e)=>{
+      e.stopPropagation();
+      cycleUiTheme();
+      paintThemeItem();
+    });
     $("hlIndexBtn").addEventListener("click", ()=>{ closeAllOverlays(); openHighlightIndex(); });
     $("backupBtn").addEventListener("click", ()=>{ closeAllOverlays(); exportBackup(); });
     $("restoreBtn").addEventListener("click", ()=>{ closeAllOverlays(); $("restoreInput").click(); });
@@ -3889,6 +3945,7 @@
 
     libraryScreen.classList.add("hidden");
     readerScreen.classList.remove("hidden");
+    setReaderChrome(true);
     setPenMode(false);
     syncBackGuard();
     // tablet+: TOC panel defaults open (it's a side panel, not an overlay);
@@ -3944,6 +4001,37 @@
     });
   }
 
+  let readerChromeHidden = false;
+  function setReaderChrome(show){
+    if(readerChromeHidden === !show) return;
+    const topbar = readerScreen.querySelector(".topbar");
+    const before = readScroll.scrollTop;
+    // a hidden bar measures 0, so read its height while it is showing:
+    // before the toggle when hiding, after it when bringing it back
+    let topH = show ? 0 : (topbar ? topbar.offsetHeight : 0);
+    readerChromeHidden = !show;
+    readerScreen.classList.toggle("chrome-hidden", readerChromeHidden);
+    if(show) topH = topbar ? topbar.offsetHeight : 0;
+    // the pane's top edge just moved by the bar's height; move the content
+    // the same amount so the line under the finger stays under the finger
+    readScroll.scrollTop = Math.max(0, before + (show ? topH : -topH));
+    resizeInkCanvas();
+  }
+  // what a tap must not be mistaken for: a link, a picture, a highlight,
+  // a control, the end of a text selection, or a pen stroke
+  let tapHadSelection = false, tapHadBar = false;
+  readScroll.addEventListener("pointerdown", ()=>{
+    const sel = window.getSelection();
+    tapHadSelection = !!(sel && !sel.isCollapsed);
+    tapHadBar = !!hlBarEl;
+  });
+  readScroll.addEventListener("click", (e)=>{
+    if(penMode || tapHadSelection || tapHadBar) return;
+    if(!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches)) return;
+    const t = e.target;
+    if(t && t.closest && t.closest("a, img, mark, button, input, select, textarea, .table-scroll, canvas")) return;
+    setReaderChrome(readerChromeHidden);
+  });
   let chapterFlashTimer = null;
   let turnClassTimer = null;
   function showChapterFlash(html, edge){
@@ -4286,7 +4374,7 @@
     buildTOC();
     if(drawer.classList.contains("show")) closeDrawer(); else openDrawer();
   });
-  $("overlay").addEventListener("click", ()=>{ closeDrawer(); closeSettings(); closeInkPop(); });
+  $("overlay").addEventListener("click", ()=>{ closeDrawer(); closeSettings(); });
 
   // Double-clicking the reading content closes the TOC if it's open — mainly
   // for tablet/desktop, where the panel is persistent (doesn't auto-close on
@@ -5314,8 +5402,9 @@
     $("penBtn").setAttribute("aria-label", on ? "필기 끝내기" : "필기");
     $("penBtn").title = on ? "필기 끝내기" : "필기";
     if(inkCanvas) inkCanvas.classList.toggle("inactive", !penMode);
-    if(on){ closeSettings(); if(!isTabletUp()) closeDrawer(); openInkPop(); }
+    if(on){ setReaderChrome(true); closeSettings(); if(!isTabletUp()) closeDrawer(); openInkPop(); }
     else { closeInkPop(); hideInkCursor(); }
+    resizeInkCanvas();
     syncBackGuard();
   }
   // no shared #overlay here on purpose: it sits above the ink canvas
@@ -5336,16 +5425,6 @@
     e.stopPropagation();
     setPenMode(false);
   });
-  // Tapping anywhere outside the toolbar dismisses just the toolbar — the
-  // pen stays selected and ready to draw, it just gets out of the way.
-  document.addEventListener("pointerdown", (e)=>{
-    if(!penMode) return;
-    const pop = $("inkPop");
-    if(!pop.classList.contains("show")) return;
-    if(pop.contains(e.target) || e.target.closest("#penBtn")) return;
-    closeInkPop();
-  });
-
   document.querySelectorAll(".ink-swatch[data-ink-color]").forEach(sw=>{
     sw.addEventListener("click", ()=>{
       inkTool = "pen"; inkColor = sw.dataset.inkColor;
@@ -5476,7 +5555,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "61";
+  const SW_VERSION = "62";
   if("serviceWorker" in navigator){
     // Only offer when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), so controller becomes non-null right
