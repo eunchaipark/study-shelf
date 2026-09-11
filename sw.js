@@ -1,8 +1,8 @@
 // 서재 — app-shell service worker.
 // Precaches the shell (HTML/CSS-in-HTML/JS/icons/vendor lib) so the reader still
 // opens offline; book content itself lives in IndexedDB, not here.
-const SHELL_CACHE = "seojae-shell-v64";
-const RUNTIME_CACHE = "seojae-runtime-v64";
+const SHELL_CACHE = "seojae-shell-v65";
+const RUNTIME_CACHE = "seojae-runtime-v65";
 const CURRENT_CACHES = [SHELL_CACHE, RUNTIME_CACHE];
 
 const SHELL_URLS = [
@@ -71,7 +71,11 @@ self.addEventListener("install", (event) => {
         // sends Cache-Control: max-age=600 on every file, so a plain
         // cache.addAll() could precache stale copies for up to 10 minutes
         // after a deploy instead of what was just pushed.
-        SHELL_URLS.map((url) => fetch(url, { cache: "reload" }).then((res) => cache.put(url, res)))
+        // a missing file fails the install rather than being cached as a 404
+        SHELL_URLS.map((url) => fetch(url, { cache: "reload" }).then((res) => {
+          if (!res.ok) throw new Error("shell asset " + url + " -> " + res.status);
+          return cache.put(url, res);
+        }))
       ))
       .then(() => self.skipWaiting())
   );
@@ -130,14 +134,30 @@ async function handleShellRequest(request) {
 // *browser's own* HTTP cache for this fetch — GitHub Pages serves index.html
 // with Cache-Control: max-age=600, so without this, "network-first" could
 // still silently hand back a stale copy for up to 10 minutes after a deploy.
+// The network gets a few seconds; on a weak signal, waiting on it left the
+// app blank until the request finally gave up. Past that the cached shell
+// opens, and the page's own update check finds the newer one in the
+// background when it lands.
+const NAV_TIMEOUT_MS = 3500;
 async function handleNavigation(request) {
   const cache = await caches.open(SHELL_CACHE);
-  try {
-    const res = await fetch(request, { cache: "reload" });
+  const cached = cache.match("./index.html");
+  // the fetch keeps going after a timeout, so a late arrival still lands
+  // in the cache for the next open
+  const network = fetch(request, { cache: "reload" }).then((res) => {
     if (res && res.ok) cache.put("./index.html", res.clone());
     return res;
+  });
+  network.catch(() => {});
+  try {
+    const res = await Promise.race([
+      network,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("nav timeout")), NAV_TIMEOUT_MS)),
+    ]);
+    if (res && res.ok) return res;
+    return (await cached) || res;
   } catch (e) {
-    return (await cache.match("./index.html")) || (await cache.match(request));
+    return (await cached) || (await cache.match(request)) || Response.error();
   }
 }
 

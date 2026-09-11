@@ -1403,7 +1403,7 @@
     }
   }
   async function persistFolders(){ bumpLibraryRev(); await S.setJSON("app:folders", folders); scheduleSync(); }
-  async function persistFiles(){ bumpLibraryRev(); await S.setJSON("app:files", files); scheduleSync(); }
+  async function persistFiles(syncDelay){ bumpLibraryRev(); await S.setJSON("app:files", files); scheduleSync(syncDelay); }
 
   async function loadPrefs(){
     const prefs = await S.getJSON("app:prefs", {});
@@ -1868,10 +1868,23 @@
   /* ---- scheduling ------------------------------------------------------ */
   // Local edits settle briefly before being pushed, so a burst of typing or
   // a multi-file drop becomes one sync rather than a dozen.
+  // A sync already due sooner is kept: a slow-lane request (reading
+  // position) must not push back one that is nearly due.
+  let syncDueAt = 0;
   function scheduleSync(delay){
     if(!fb || !fb.currentUser) return;
+    const due = Date.now() + (delay || 1500);
+    if(syncDebounceTimer && syncDueAt && syncDueAt <= due) return;
     clearTimeout(syncDebounceTimer);
-    syncDebounceTimer = setTimeout(syncNow, delay || 1500);
+    syncDueAt = due;
+    syncDebounceTimer = setTimeout(()=>{ syncDebounceTimer = null; syncDueAt = 0; syncNow(); }, due - Date.now());
+  }
+  // whatever is waiting on the slow lane goes now: the app is being left
+  function flushSync(){
+    if(!syncDebounceTimer) return;
+    clearTimeout(syncDebounceTimer);
+    syncDebounceTimer = null; syncDueAt = 0;
+    syncNow();
   }
   function scheduleRetry(){
     clearTimeout(syncRetryTimer);
@@ -3800,7 +3813,7 @@
         const id = genId();
         const h1 = text.match(/^#\s+(.*)/m);
         const title = (h1 ? stripInlineMd(h1[1]) : "") || file.name.replace(/\.(md|markdown)$/i,"");
-        const chapters = splitChapters(text, title, null); // count-only; images resolved at read time
+        const chapters = chapterChunks(text, title); // count-only; images resolved at read time
         await S.setText("file-content:"+id, text);
         if(assetMap && Object.keys(assetMap).length){
           const used = {};
@@ -3865,15 +3878,27 @@
   // before marked sees the text — otherwise marked would mangle underscores/
   // asterisks inside expressions as bold/italic — then KaTeX-rendered back in
   // after parsing. Placeholders use characters marked won't touch.
+  // Runs fn over the parts of the text that are not code: fenced blocks and
+  // code spans are handed back untouched, so a `$HOME` in a shell snippet
+  // is not a formula and Python's 2**3 is not bold.
+  function mapOutsideCode(md, fn){
+    const segments = md.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g);
+    return segments.map((seg, i)=> (i % 2 === 1) ? seg : fn(seg)).join("");
+  }
   function extractMath(md){
     const store = [];
-    let text = md.replace(/\$\$([\s\S]+?)\$\$/g, (m, expr)=>{
-      store.push({expr, display:true});
-      return "@@MATH"+(store.length-1)+"@@";
-    });
-    text = text.replace(/\$([^\$\n]+?)\$/g, (m, expr)=>{
-      store.push({expr, display:false});
-      return "@@MATH"+(store.length-1)+"@@";
+    const text = mapOutsideCode(md, (seg)=>{
+      let out = seg.replace(/\$\$([\s\S]+?)\$\$/g, (m, expr)=>{
+        store.push({expr, display:true});
+        return "@@MATH"+(store.length-1)+"@@";
+      });
+      // an inline formula hugs its dollars ($x$, not $ x $) and is not
+      // followed by a digit — so "$5 and $10" stays a sentence about money
+      out = out.replace(/\$(?!\s)([^\$\n]*?[^\s\$])\$(?!\d)/g, (m, expr)=>{
+        store.push({expr, display:false});
+        return "@@MATH"+(store.length-1)+"@@";
+      });
+      return out;
     });
     return {text, store};
   }
@@ -3899,15 +3924,13 @@
   // and fenced code blocks are skipped so `**` used as an operator (e.g.
   // Python's 2**3) is never touched.
   function fixAttachedEmphasis(md){
-    const segments = md.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g);
-    return segments.map((seg, i)=>{
-      if(i % 2 === 1) return seg; // odd = a captured code segment, leave untouched
+    return mapOutsideCode(md, (seg)=>{
       let out = seg.replace(/\*\*([^\*\n]+?)\*\*(?=[\p{L}\p{N}])/gu, (m, inner)=>
         "<strong>"+marked.parseInline(inner)+"</strong>");
       out = out.replace(/(^|[^*])\*([^\*\n]+?)\*(?=[\p{L}\p{N}])/gu, (m, before, inner)=>
         before+"<em>"+marked.parseInline(inner)+"</em>");
       return out;
-    }).join("");
+    });
   }
   // Rewrites <img src="relative-name.png"> to the matching data: URL from an
   // uploaded-alongside-the-md asset map; remote/data URLs pass through untouched.
@@ -3927,7 +3950,18 @@
   function chapterChunks(md, fallbackTitle){
     const lines = md.split("\n");
     const headIdx = [];
-    lines.forEach((line,i)=>{ if(/^#{1,2}\s+\S/.test(line)) headIdx.push(i); });
+    // A "# install" inside a shell snippet used to start a new chapter,
+    // cutting the code block in two with a broken fence on either side.
+    let fence = null;   // the fence that is open: its character and length
+    lines.forEach((line,i)=>{
+      const m = line.match(/^ {0,3}(`{3,}|~{3,})/);
+      if(m){
+        if(!fence) fence = m[1];
+        else if(m[1][0] === fence[0] && m[1].length >= fence.length) fence = null;
+        return;
+      }
+      if(!fence && /^#{1,2}\s+\S/.test(line)) headIdx.push(i);
+    });
     const chunks = [];
     if(headIdx.length >= 2){
       if(headIdx[0] > 0){
@@ -3947,15 +3981,20 @@
     return chunks;
   }
 
+  function renderChapterHtml(text, assetMap){
+    const {text: mathSafeText, store} = extractMath(text);
+    const safeText = fixAttachedEmphasis(mathSafeText);
+    let html = marked.parse(safeText);
+    html = injectMath(html, store);
+    html = applyLocalImages(html, assetMap);
+    return DOMPurify.sanitize(html);
+  }
+  // Each chapter's HTML is made the first time it is asked for: opening a
+  // long book used to parse every chapter before the first could show.
   function splitChapters(md, fallbackTitle, assetMap){
     return chapterChunks(md, fallbackTitle).map(c=>{
-      const {text: mathSafeText, store} = extractMath(c.text);
-      const safeText = fixAttachedEmphasis(mathSafeText);
-      let html = marked.parse(safeText);
-      html = injectMath(html, store);
-      html = applyLocalImages(html, assetMap);
-      html = DOMPurify.sanitize(html);
-      return {title:c.title, html};
+      let html = null;
+      return { title: c.title, get html(){ if(html === null) html = renderChapterHtml(c.text, assetMap); return html; } };
     });
   }
 
@@ -4128,7 +4167,14 @@
     renderChapter(next);
   }
 
+  // Two renders can overlap: the highlights and ink are read from storage
+  // after the text is in, and a second turn can land during that wait. The
+  // older render then painted the older chapter's highlights and ink onto
+  // the newer chapter's text — so each render checks, after every wait,
+  // that it is still the one that matters.
+  let renderSeq = 0;
   async function renderChapter(idx, resetScroll, startFrac, announce){
+    const seq = ++renderSeq;
     const cameFrom = chapterIdx;
     chapterIdx = Math.max(0, Math.min(idx, activeChapters.length-1));
     readInner.innerHTML = activeChapters[chapterIdx].html;
@@ -4165,8 +4211,10 @@
     updateProgress();
     saveProgress();
     await loadHighlightsForChapter();
+    if(seq !== renderSeq) return;
     if(highlights.length) paintHighlights();
     await loadInkForChapter();
+    if(seq !== renderSeq) return;
     setupInkCanvas();
     settleChapterMedia(startFrac, readScroll.scrollTop);
   }
@@ -4304,6 +4352,7 @@
     const el = readScroll;
     const max = el.scrollHeight - el.clientHeight;
     const frac = max > 0 ? el.scrollTop / max : 1;
+    readerLastFrac = max > 0 ? frac : 0;
     const overall = (chapterIdx + frac) / activeChapters.length;
     ribbonFill.style.height = Math.min(100, Math.max(2, overall*100)) + "%";
     progressPct.textContent = Math.round(overall*100) + "%";
@@ -4319,14 +4368,23 @@
     readScroll._t = setTimeout(saveProgress, 500);
   });
 
+  // Every pause in scrolling saved the position and, signed in, sent the
+  // whole library to the cloud a second and a half later — a Firestore
+  // round-trip for each paragraph read. The position still lands locally
+  // at once; the cloud gets it on a slow lane, or when the app is left.
+  const PROGRESS_SYNC_DELAY = 30000;
+  let lastProgressSig = "";
   async function saveProgress(){
-    if(!activeFile) return;
+    if(!activeFile || !readerScreenVisible()) return;   // hidden, the pane measures as empty
     const pct = updateProgress();
     const max = readScroll.scrollHeight - readScroll.clientHeight;
     const frac = max > 0 ? Math.min(1, Math.max(0, readScroll.scrollTop / max)) : 0;
+    const sig = activeFile.id + ":" + chapterIdx + ":" + frac.toFixed(4) + ":" + fontSize + ":" + theme;
+    if(sig === lastProgressSig) return;
+    lastProgressSig = sig;
     activeFile.progress = {chapterIdx, pct, frac, fontSize, theme};
     activeFile.updatedTs = Date.now();
-    await persistFiles();
+    await persistFiles(PROGRESS_SYNC_DELAY);
   }
 
   function buildTOC(){
@@ -4349,11 +4407,16 @@
     // hide first: setPenMode consults the back guard, and with the reader
     // still showing it would arm a sentinel only for the next line to take
     // it straight back off again
+    // the position is read off the pane while it is still laid out — hidden,
+    // it measures as empty and would record the book as unread
+    clearTimeout(readScroll._t);
+    const saved = saveProgress();
     readerScreen.classList.add("hidden");
     libraryScreen.classList.remove("hidden");
     setPenMode(false);
     renderAll();
     syncBackGuard();
+    saved.then(()=> scheduleSync(1500));
   }
   $("backBtn").addEventListener("click", leaveReader);
   $("prevBtn").addEventListener("click", ()=> goChapter(-1));
@@ -4673,8 +4736,10 @@
   }
 
   async function loadHighlightsForChapter(){
-    highlights = activeFile ? await S.getJSON(hlKey(activeFile.id, chapterIdx), []) : [];
-    if(!Array.isArray(highlights)) highlights = [];
+    const key = activeFile ? hlKey(activeFile.id, chapterIdx) : null;
+    const loaded = key ? await S.getJSON(key, []) : [];
+    if((activeFile ? hlKey(activeFile.id, chapterIdx) : null) !== key) return;   // the chapter changed meanwhile
+    highlights = Array.isArray(loaded) ? loaded : [];
   }
   async function saveHighlights(){
     if(!activeFile) return;
@@ -4885,7 +4950,9 @@
 
   async function loadInkForChapter(){
     const key = inkKey();
-    inkStrokes = key ? await S.getJSON(key, []) : [];
+    const loaded = key ? await S.getJSON(key, []) : [];
+    if(inkKey() !== key) return;   // the chapter changed while these were read
+    inkStrokes = Array.isArray(loaded) ? loaded : [];
     inkRedoStack = [];
     // Strokes made before anchoring existed are still chapter-relative. They
     // are correct at this instant — this is the size they were last seen at
@@ -5167,9 +5234,14 @@
     if(inkDrawing) paintStroke(inkDrawing, w, h, null, boxes);
   }
 
-  function pointerToNorm(e){
+  // geo is the surface's size and screen position, read once per event
+  // rather than once per coalesced sample (a stylus sends dozens a frame)
+  function inkGeometry(){
     const { w, h } = inkContentSize();
-    const rect = inkCanvas.getBoundingClientRect();
+    return { w, h, rect: inkCanvas.getBoundingClientRect() };
+  }
+  function pointerToNorm(e, geo){
+    const { w, h, rect } = geo || inkGeometry();
     // rect.top is the window's top edge on screen, i.e. content y
     // inkWinTop — so the offset within the canvas has to be added back on
     return [ (e.clientX-rect.left)/w, (inkWinTop + (e.clientY-rect.top))/h ];
@@ -5178,11 +5250,11 @@
   // Sub-pixel duplicates add nothing to how a stroke looks and a great deal
   // to what has to be stored and synced, so a sample has to actually move.
   const INK_MIN_STEP = 0.7;
-  function appendInkPoint(ev, w, h){
-    const pt = pointerToNorm(ev);
+  function appendInkPoint(ev, geo){
+    const pt = pointerToNorm(ev, geo);
     const pts = inkDrawing.points;
     const prev = pts[pts.length-1];
-    const dx = (pt[0]-prev[0])*w, dy = (pt[1]-prev[1])*h;
+    const dx = (pt[0]-prev[0])*geo.w, dy = (pt[1]-prev[1])*geo.h;
     if(dx*dx + dy*dy < INK_MIN_STEP*INK_MIN_STEP) return null;
     pts.push(pt);
     return prev;
@@ -5417,7 +5489,8 @@
       updateInkCursor(e, strokeWidthFor(e, tool), tool);
       if(!inkDrawing || e.pointerId !== inkActivePointerId) return;
       e.preventDefault();
-      const { w, h } = inkContentSize();
+      const geo = inkGeometry();
+      const { w, h } = geo;
       // A stylus samples far faster than the display refreshes and the
       // browser merges those samples into one move event; asking for the
       // coalesced list back recovers the parts of the stroke that were
@@ -5426,19 +5499,19 @@
       const samples = (coalesced && coalesced.length) ? coalesced : [e];
       const isHighlighter = inkDrawing.tool === "highlighter";
       const targets = inkDrawing.tool === "eraser" ? [inkCtx, highlightCtx] : [ctxForTool(inkDrawing.tool)];
-      let moved = false;
-      for(const ev of samples){
-        const prev = appendInkPoint(ev, w, h);
-        if(!prev) continue;
-        moved = true;
-        if(isHighlighter) continue; // repainted as one path below
-        const pt = inkDrawing.points[inkDrawing.points.length-1];
+      const pts = inkDrawing.points;
+      const firstNew = pts.length;   // everything appended below is new
+      for(const ev of samples) appendInkPoint(ev, geo);
+      const moved = pts.length > firstNew;
+      // the new samples chain on from the last committed point, so they go
+      // down as one path per event rather than a styled segment per sample
+      if(moved && !isHighlighter){   // the highlighter is repainted as one path below
         for(const ctx of targets){
           ctx.save();
           applyStrokeStyle(ctx, inkDrawing.tool, inkDrawing.color, inkDrawing.width);
           ctx.beginPath();
-          ctx.moveTo(prev[0]*w, prev[1]*h);
-          ctx.lineTo(pt[0]*w, pt[1]*h);
+          ctx.moveTo(pts[firstNew-1][0]*w, pts[firstNew-1][1]*h);
+          for(let i=firstNew; i<pts.length; i++) ctx.lineTo(pts[i][0]*w, pts[i][1]*h);
           ctx.stroke();
           ctx.restore();
         }
@@ -5652,8 +5725,24 @@
     });
   });
 
+  // A rotation reflows the chapter to a different height, and the same
+  // scrollTop is then a different place in the text; the fraction read is
+  // what to keep. Height-only changes (the keyboard, the browser's own
+  // bars) leave the reflow alone and only refresh the ink surface. Both
+  // wait for the burst of resize events a rotation fires to settle.
+  let readerLastFrac = 0, readerLastWidth = window.innerWidth, resizeSettleTimer = null;
   window.addEventListener("resize", ()=>{
-    if(readerScreenVisible()) resizeInkCanvas();
+    if(!readerScreenVisible()) return;
+    clearTimeout(resizeSettleTimer);
+    resizeSettleTimer = setTimeout(()=>{
+      if(!readerScreenVisible()) return;
+      if(window.innerWidth !== readerLastWidth){
+        readerLastWidth = window.innerWidth;
+        const max = Math.max(0, readScroll.scrollHeight - readScroll.clientHeight);
+        readScroll.scrollTo({ top: Math.round(readerLastFrac * max), behavior: "instant" });
+      }
+      resizeInkCanvas();
+    }, 120);
   });
   // tablet: the TOC panel's width animates (open/close), which reflows how
   // much room the reading column actually has — resync the ink canvas once
@@ -5729,7 +5818,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "64";
+  const SW_VERSION = "65";
   if("serviceWorker" in navigator){
     // Only offer when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), so controller becomes non-null right
@@ -5782,8 +5871,11 @@
     prepareGis();
     window.addEventListener("focus", ()=>{ if(fb && fb.currentUser) syncNow(); });
     document.addEventListener("visibilitychange", ()=>{
-      if(document.visibilityState === "visible" && fb && fb.currentUser) syncNow();
+      if(!fb || !fb.currentUser) return;
+      if(document.visibilityState === "visible") syncNow();
+      else flushSync();
     });
+    window.addEventListener("pagehide", flushSync);
     window.addEventListener("online", ()=>{ syncRetryDelay = 0; if(fb && fb.currentUser) syncNow(); });
     window.addEventListener("offline", ()=>{ if(fb && fb.currentUser) setSyncStatus("offline"); });
     // a safety net behind the live listener, not the main path any more
