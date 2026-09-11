@@ -790,16 +790,44 @@
      in the flow now — the page moves down to make room and nothing is ever
      covered — and they stay for as long as the pen is out. */
   .ink-bar{
-    display:none; flex:0 0 auto; flex-direction:column; gap:6px;
-    padding:7px 10px 8px; background:var(--surface); border-bottom:1px solid var(--line);
+    display:none; flex:0 0 auto; flex-direction:column; gap:6px; position:relative; z-index:6;
+    padding:6px 10px 7px; background:var(--surface); border-bottom:1px solid var(--line);
   }
   .ink-bar.show{display:flex;}
   .ink-bar-row{display:flex; align-items:center; gap:7px; overflow-x:auto; scrollbar-width:none;}
   .ink-bar-row::-webkit-scrollbar{display:none;}
   .ink-bar .ink-swatch{width:26px; height:26px; border-width:2px;}
-  .ink-bar .ink-swatch.ink-highlighter{width:30px; height:17px; border-radius:5px;}
   .ink-bar .ink-swatch.ink-eraser .icon{width:14px; height:14px;}
-  .ink-bar .ink-size-btn{flex:0 0 auto; width:34px; height:30px;}
+  /* the two chips: what is picked now, and a caret that says there is more */
+  .ink-chip{
+    display:flex; align-items:center; gap:3px; height:30px; padding:0 4px 0 6px; flex:0 0 auto;
+    border-radius:var(--r-sm); border:1px solid var(--line-strong); background:var(--surface); color:var(--text-700);
+    transition:background-color .15s var(--ease), border-color .15s var(--ease);
+  }
+  .ink-chip .caret, .ink-pill .caret{width:13px; height:13px; color:var(--text-400); flex:0 0 auto;}
+  .ink-chip.open{border-color:var(--accent-400); background:var(--accent-wash);}
+  .ink-chip.open .caret{transform:rotate(180deg);}
+  .ink-chip .dot{border-radius:50%; background:currentColor; margin:0 3px;}
+  .ink-cur{display:block; width:18px; height:18px; border-radius:50%; background:var(--sw); box-shadow:inset 0 0 0 1px rgba(0,0,0,.08); transition:opacity .15s var(--ease);}
+  .ink-cur.hi{width:22px; height:13px; border-radius:4px;}
+  .ink-cur.muted{opacity:.3;}
+  /* the flyouts hang under their chip */
+  .ink-fly{
+    display:none; flex-direction:column; gap:9px; position:absolute; top:calc(100% + 4px); left:10px; z-index:8;
+    padding:10px; background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md); box-shadow:var(--shadow-md);
+  }
+  .ink-fly.show{display:flex;}
+  .ink-fly-row{display:flex; align-items:center; gap:9px;}
+  .ink-fly .ink-swatch{width:30px; height:30px;}
+  .ink-fly .ink-swatch.ink-highlighter{width:34px; height:22px; border-radius:6px;}
+  .ink-fly .ink-size-btn{flex:0 0 auto; width:42px; height:34px;}
+  /* folded: a pill in the corner of the page that opens the strip again */
+  .ink-pill{
+    display:none; align-items:center; gap:2px; position:absolute; top:8px; right:12px; z-index:7;
+    height:32px; padding:0 6px 0 7px; border-radius:16px; border:1px solid var(--line-strong);
+    background:var(--surface); color:var(--text-700); box-shadow:var(--shadow-sm);
+  }
+  .ink-pill.show{display:flex;}
   .ink-sep{width:1px; height:20px; background:var(--line-strong); flex:0 0 auto; margin:0 2px;}
   .ink-spacer{flex:1;}
   .ink-act{
@@ -933,9 +961,9 @@
     .read-inner{padding-top:52px; max-width:min(720px, 88vw);}
     .pop{width:288px; padding:22px;}
     .ink-row{gap:12px;}
-    .ink-swatch{width:38px; height:38px;}
-    .ink-swatch.ink-highlighter{width:46px; height:28px;}
-    .ink-size-btn{height:40px;}
+    .ink-fly .ink-swatch{width:36px; height:36px;}
+    .ink-fly .ink-swatch.ink-highlighter{width:44px; height:26px;}
+    .ink-fly .ink-size-btn{height:38px; width:46px;}
     .font-row button{width:38px; height:38px;}
     .theme-swatch{height:52px;}
   }
@@ -1072,29 +1100,24 @@
       </div>
 
       <div class="reader-main">
-        <!-- pen tools: a strip in the flow above the page, not a card over it.
-             Kept as #inkPop so the existing open/close and every control id
-             carry on unchanged. -->
+        <!-- pen tools: one row in the flow above the page. Colour and width
+             live behind two chips that open a flyout, so the strip is a
+             single line; a tap on the page folds the whole thing down to a
+             pill in the corner. Kept as #inkPop so open/close and every
+             control id carry on unchanged. -->
         <div class="ink-bar" id="inkPop" role="toolbar" aria-label="필기 도구">
           <div class="ink-bar-row">
-            <button class="ink-swatch active" data-ink-color="#3F3A34" style="--sw:#3F3A34" aria-label="검정 펜"></button>
-            <button class="ink-swatch" data-ink-color="#C97A45" style="--sw:#C97A45" aria-label="주황 펜"></button>
-            <button class="ink-swatch" data-ink-color="#7C8FA6" style="--sw:#7C8FA6" aria-label="파랑 펜"></button>
-            <button class="ink-swatch" data-ink-color="#B4574E" style="--sw:#B4574E" aria-label="빨강 펜"></button>
-            <span class="ink-sep"></span>
-            <button class="ink-swatch ink-highlighter" data-ink-highlight="#F4C84A" style="--sw:#F4C84A" aria-label="노랑 형광펜"></button>
-            <button class="ink-swatch ink-highlighter" data-ink-highlight="#8FCB8A" style="--sw:#8FCB8A" aria-label="초록 형광펜"></button>
-            <button class="ink-swatch ink-highlighter" data-ink-highlight="#EE9DBB" style="--sw:#EE9DBB" aria-label="분홍 형광펜"></button>
-            <button class="ink-swatch ink-highlighter" data-ink-highlight="#8FB6E3" style="--sw:#8FB6E3" aria-label="파랑 형광펜"></button>
-            <span class="ink-sep"></span>
-            <button class="ink-swatch ink-eraser" id="inkEraserBtn" aria-label="지우개">
+            <button class="ink-chip" id="inkColorBtn" aria-label="펜 색" title="펜 색" aria-haspopup="true" aria-expanded="false">
+              <span class="ink-cur" id="inkCur" style="--sw:#3F3A34"></span>
+              <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            <button class="ink-chip" id="inkSizeBtn" aria-label="선 굵기" title="선 굵기" aria-haspopup="true" aria-expanded="false">
+              <span class="dot" id="inkCurDot" style="width:9px;height:9px;"></span>
+              <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            <button class="ink-swatch ink-eraser" id="inkEraserBtn" aria-label="지우개" title="지우개">
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20H8l-5-5a2 2 0 0 1 0-2.8l9-9a2 2 0 0 1 2.8 0l5.2 5.2a2 2 0 0 1 0 2.8L13 18"/></svg>
             </button>
-          </div>
-          <div class="ink-bar-row">
-            <button class="ink-size-btn" data-ink-size="2.5" aria-label="가는 선"><span class="dot" style="width:5px;height:5px;"></span></button>
-            <button class="ink-size-btn active" data-ink-size="4.5" aria-label="보통 선"><span class="dot" style="width:9px;height:9px;"></span></button>
-            <button class="ink-size-btn" data-ink-size="8" aria-label="굵은 선"><span class="dot" style="width:14px;height:14px;"></span></button>
             <span class="ink-sep"></span>
             <button class="ink-act" id="inkUndoBtn" disabled aria-label="되돌리기" title="되돌리기">
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5A5.5 5.5 0 0 1 20 14.5v0A5.5 5.5 0 0 1 14.5 20H11"/></svg>
@@ -1106,12 +1129,41 @@
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>
             </button>
             <span class="ink-spacer"></span>
+            <button class="ink-act" id="inkFoldBtn" aria-label="도구 접기" title="도구 접기 (본문을 한 번 톡 쳐도 접혀요)">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>
+            </button>
             <button class="ink-act done" id="inkDoneBtn" aria-label="필기 끝내기" title="필기 끝내기">
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
               <span>끝내기</span>
             </button>
           </div>
+          <div class="ink-fly" id="inkColorFly" role="group" aria-label="펜 색">
+            <div class="ink-fly-row">
+              <button class="ink-swatch active" data-ink-color="#3F3A34" style="--sw:#3F3A34" aria-label="검정 펜"></button>
+              <button class="ink-swatch" data-ink-color="#C97A45" style="--sw:#C97A45" aria-label="주황 펜"></button>
+              <button class="ink-swatch" data-ink-color="#7C8FA6" style="--sw:#7C8FA6" aria-label="파랑 펜"></button>
+              <button class="ink-swatch" data-ink-color="#B4574E" style="--sw:#B4574E" aria-label="빨강 펜"></button>
+            </div>
+            <div class="ink-fly-row">
+              <button class="ink-swatch ink-highlighter" data-ink-highlight="#F4C84A" style="--sw:#F4C84A" aria-label="노랑 형광펜"></button>
+              <button class="ink-swatch ink-highlighter" data-ink-highlight="#8FCB8A" style="--sw:#8FCB8A" aria-label="초록 형광펜"></button>
+              <button class="ink-swatch ink-highlighter" data-ink-highlight="#EE9DBB" style="--sw:#EE9DBB" aria-label="분홍 형광펜"></button>
+              <button class="ink-swatch ink-highlighter" data-ink-highlight="#8FB6E3" style="--sw:#8FB6E3" aria-label="파랑 형광펜"></button>
+            </div>
+          </div>
+          <div class="ink-fly" id="inkSizeFly" role="group" aria-label="선 굵기">
+            <div class="ink-fly-row">
+              <button class="ink-size-btn" data-ink-size="2.5" aria-label="가는 선"><span class="dot" style="width:5px;height:5px;"></span></button>
+              <button class="ink-size-btn active" data-ink-size="4.5" aria-label="보통 선"><span class="dot" style="width:9px;height:9px;"></span></button>
+              <button class="ink-size-btn" data-ink-size="8" aria-label="굵은 선"><span class="dot" style="width:14px;height:14px;"></span></button>
+            </div>
+          </div>
         </div>
+        <!-- the folded tools: a pill in the corner showing the current pen -->
+        <button class="ink-pill" id="inkPill" aria-label="필기 도구 펼치기" title="필기 도구 펼치기">
+          <span class="ink-cur" id="inkPillCur" style="--sw:#3F3A34"></span>
+          <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
         <div class="read-scroll" id="readScroll">
           <div class="read-inner" id="readInner"></div>
         </div>
@@ -4014,7 +4066,7 @@
     if(show) topH = topbar ? topbar.offsetHeight : 0;
     // the pane's top edge just moved by the bar's height; move the content
     // the same amount so the line under the finger stays under the finger
-    readScroll.scrollTop = Math.max(0, before + (show ? topH : -topH));
+    readScroll.scrollTo({ top: Math.max(0, before + (show ? topH : -topH)), behavior: "instant" });
     resizeInkCanvas();
   }
   // what a tap must not be mistaken for: a link, a picture, a highlight,
@@ -4812,6 +4864,9 @@
   let inkSize = 4.5;
   let inkTool = "pen"; // 'pen' | 'highlighter' | 'eraser'
   let penMode = false;
+  let inkToolsFolded = false;       // the strip is down to its pill
+  let inkDownAt = 0;                // when the current stroke's pointer went down
+  let inkPressClosedFlyout = false; // this press put a flyout away, so it is not also a fold
   let inkDrawing = null;
   let inkActivePointerId = null;
   let inkActiveStylusId = null;   // palm rejection: pointerId of the stylus currently down
@@ -4820,6 +4875,8 @@
   let inkTouchPointers = new Map(); // touch pointerId -> last clientY, for two-finger-scroll detection
   let inkMultiTouchActive = false;  // sticky until every finger lifts, so 2->1 finger mid-gesture doesn't suddenly draw
   let inkPanLastCentroidY = null;
+  let inkPanStart = null;           // centroid where the two-finger gesture began
+  let inkPanHorizontal = false;     // once decided, a sideways two-finger drag turns the page instead of panning
   let inkLastLoggedButtons = null;  // last-seen button bits, so the log only fires on a change
 
   function inkKey(){ return activeFile ? "ink:"+activeFile.id+":"+chapterIdx : null; }
@@ -5219,7 +5276,12 @@
 
   function inkTouchCentroidY(){
     let sum=0, n=0;
-    inkTouchPointers.forEach(y=>{ sum+=y; n++; });
+    inkTouchPointers.forEach(p=>{ sum+=p.y; n++; });
+    return n ? sum/n : null;
+  }
+  function inkTouchCentroidX(){
+    let sum=0, n=0;
+    inkTouchPointers.forEach(p=>{ sum+=p.x; n++; });
     return n ? sum/n : null;
   }
   // A second finger landing mid-gesture means "scroll", not "draw" — abort
@@ -5228,8 +5290,19 @@
   // and stay in scroll mode until every finger lifts, so 2->1 finger while
   // panning doesn't suddenly resume drawing.
   function endInkTouch(pointerId){
+    const wasMulti = inkMultiTouchActive;
+    const lastX = inkTouchCentroidX();
     inkTouchPointers.delete(pointerId);
-    if(inkTouchPointers.size===0){ inkMultiTouchActive = false; inkPanLastCentroidY = null; }
+    if(inkTouchPointers.size===0){
+      // With the pen out, one finger draws, so the page-turn swipe is done
+      // with two: a clearly sideways two-finger drag of a third of the
+      // screen turns the page, anything else was a scroll.
+      if(wasMulti && inkPanHorizontal && inkPanStart && lastX !== null){
+        const dx = lastX - inkPanStart.x;
+        if(Math.abs(dx) > Math.max(96, window.innerWidth * 0.3)) goChapter(dx < 0 ? 1 : -1);
+      }
+      inkMultiTouchActive = false; inkPanLastCentroidY = null; inkPanStart = null; inkPanHorizontal = false;
+    }
     else if(inkMultiTouchActive){ inkPanLastCentroidY = inkTouchCentroidY(); } // avoid a jump when the touch count changes
   }
 
@@ -5257,11 +5330,12 @@
     inkCanvas.addEventListener("pointerdown", (e)=>{
       if(!penMode) return;
       if(e.pointerType==="touch"){
-        inkTouchPointers.set(e.pointerId, e.clientY);
+        inkTouchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
         if(inkTouchPointers.size>=2) inkMultiTouchActive = true;
         if(inkMultiTouchActive){
           if(inkDrawing){ inkDrawing = null; inkActivePointerId = null; redrawInk(); }
           inkPanLastCentroidY = inkTouchCentroidY();
+          if(!inkPanStart){ inkPanStart = { x: inkTouchCentroidX(), y: inkPanLastCentroidY }; inkPanHorizontal = false; }
           return;
         }
         // Palm rejection: while (or just after) a stylus is in contact,
@@ -5276,6 +5350,7 @@
       if(e.pointerType==="pen") inkDebugLog("pen down: button="+e.button+" buttons="+e.buttons+" barrelHeld="+barrelHeld);
       const tool = barrelHeld ? "eraser" : inkTool;
       inkActivePointerId = e.pointerId;
+      inkDownAt = Date.now();
       try{ inkCanvas.setPointerCapture(e.pointerId); }catch(err){}
       const width = strokeWidthFor(e, tool);
       updateInkCursor(e, width, tool);
@@ -5284,10 +5359,17 @@
     inkCanvas.addEventListener("pointermove", (e)=>{
       if(!penMode) return;
       if(e.pointerType==="touch" && inkTouchPointers.has(e.pointerId)){
-        inkTouchPointers.set(e.pointerId, e.clientY);
+        inkTouchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
         if(inkMultiTouchActive){
           e.preventDefault();
           const centroidY = inkTouchCentroidY();
+          // decide the gesture's axis once it has moved enough to tell, and
+          // once sideways, stop panning so the page doesn't wobble under it
+          if(inkPanStart && !inkPanHorizontal){
+            const dx = inkTouchCentroidX() - inkPanStart.x, dy = centroidY - inkPanStart.y;
+            if(Math.abs(dx) > 24 && Math.abs(dx) > Math.abs(dy) * 2) inkPanHorizontal = true;
+          }
+          if(inkPanHorizontal){ inkPanLastCentroidY = centroidY; return; }
           // .read-scroll has scroll-behavior:smooth for programmatic jumps
           // (chapter change, TOC nav) — that also applies to plain scrollTop
           // writes, so every one of these per-frame drag updates was
@@ -5375,6 +5457,9 @@
         // redraw now so the committed stroke gets the smoothed curve treatment
         redrawInk();
       }
+      // A touch that never moved draws nothing, so it can mean something
+      // else: fold the tools away for a clear page, or bring them back.
+      else if(e && e.type === "pointerup" && Date.now() - inkDownAt < 350 && !inkPressClosedFlyout) setInkFolded(!inkToolsFolded);
       inkActivePointerId = null;
     };
     inkCanvas.addEventListener("pointerup", endStroke);
@@ -5402,7 +5487,7 @@
     $("penBtn").setAttribute("aria-label", on ? "필기 끝내기" : "필기");
     $("penBtn").title = on ? "필기 끝내기" : "필기";
     if(inkCanvas) inkCanvas.classList.toggle("inactive", !penMode);
-    if(on){ setReaderChrome(true); closeSettings(); if(!isTabletUp()) closeDrawer(); openInkPop(); }
+    if(on){ setReaderChrome(true); closeSettings(); if(!isTabletUp()) closeDrawer(); openInkPop(); showPenGestureHint(); }
     else { closeInkPop(); hideInkCursor(); }
     resizeInkCanvas();
     syncBackGuard();
@@ -5411,8 +5496,83 @@
   // (z-index 50 vs 5) and would silently block every drawing gesture
   // while the toolbar is open, since pen mode keeps the toolbar open
   // the whole time you're drawing.
-  function openInkPop(){ $("inkPop").classList.add("show"); }
-  function closeInkPop(){ $("inkPop").classList.remove("show"); }
+  // Neither gesture has a button to find it by, so say so once, the first
+  // time the pen comes out on a touch screen.
+  function showPenGestureHint(){
+    if(!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches)) return;
+    let seen = false;
+    try{ seen = !!localStorage.getItem("hint.penGestures"); }catch(e){}
+    if(seen) return;
+    try{ localStorage.setItem("hint.penGestures", "1"); }catch(e){}
+    toast("본문을 톡 치면 도구가 접혀요 · 두 손가락으로 옆으로 밀면 장이 넘어가요");
+  }
+  function openInkPop(){ inkToolsFolded = false; syncInkBar(); }
+  function closeInkPop(){ closeInkFlyouts(); syncInkBar(); }
+  function syncInkBar(){
+    $("inkPop").classList.toggle("show", penMode && !inkToolsFolded);
+    $("inkPill").classList.toggle("show", penMode && inkToolsFolded);
+  }
+  /* The strip folds down to a pill in the corner — a tap on the page, or
+     the chevron — so the whole screen is there to write on; the pill, or
+     another tap, brings it back. The page's top edge moves by the strip's
+     height when it goes, so the scroll moves the same amount and the line
+     under the pen stays where it was. */
+  function setInkFolded(folded){
+    if(!penMode || inkToolsFolded === folded) return;
+    const bar = $("inkPop");
+    const before = readScroll.scrollTop;
+    const wasH = bar.classList.contains("show") ? bar.offsetHeight : 0;
+    inkToolsFolded = folded;
+    closeInkFlyouts();
+    syncInkBar();
+    const nowH = bar.classList.contains("show") ? bar.offsetHeight : 0;
+    if(nowH !== wasH) readScroll.scrollTo({ top: Math.max(0, before + (nowH - wasH)), behavior: "instant" });
+    resizeInkCanvas();
+  }
+  $("inkFoldBtn").addEventListener("click", (e)=>{ e.stopPropagation(); setInkFolded(true); });
+  $("inkPill").addEventListener("click", (e)=>{ e.stopPropagation(); setInkFolded(false); });
+
+  /* colour and width sit behind two chips; each opens a flyout under itself */
+  function closeInkFlyouts(){
+    [["inkColorBtn","inkColorFly"],["inkSizeBtn","inkSizeFly"]].forEach(([b,f])=>{
+      $(f).classList.remove("show");
+      $(b).classList.remove("open");
+      $(b).setAttribute("aria-expanded", "false");
+    });
+  }
+  function toggleInkFlyout(btnId, flyId){
+    const fly = $(flyId), wantOpen = !fly.classList.contains("show");
+    closeInkFlyouts();
+    if(!wantOpen) return;
+    const btn = $(btnId), bar = $("inkPop"), row = btn.parentNode;
+    fly.classList.add("show");
+    btn.classList.add("open");
+    btn.setAttribute("aria-expanded", "true");
+    // under the chip, but never off the right edge of the strip
+    const left = btn.offsetLeft - (row.scrollLeft || 0);
+    fly.style.left = Math.max(6, Math.min(left, bar.clientWidth - fly.offsetWidth - 6)) + "px";
+  }
+  $("inkColorBtn").addEventListener("click", (e)=>{ e.stopPropagation(); toggleInkFlyout("inkColorBtn", "inkColorFly"); });
+  $("inkSizeBtn").addEventListener("click", (e)=>{ e.stopPropagation(); toggleInkFlyout("inkSizeBtn", "inkSizeFly"); });
+  // a press anywhere else puts a flyout away — without eating the press, so
+  // a stroke that starts on the page still starts
+  document.addEventListener("pointerdown", (e)=>{
+    inkPressClosedFlyout = false;
+    if(!$("inkColorFly").classList.contains("show") && !$("inkSizeFly").classList.contains("show")) return;
+    if(e.target && e.target.closest && e.target.closest("#inkPop")) return;
+    closeInkFlyouts();
+    inkPressClosedFlyout = true;
+  }, true);
+  // the chips and the pill show what the next stroke will be
+  function syncInkChip(){
+    [$("inkCur"), $("inkPillCur")].forEach(el=>{
+      el.style.setProperty("--sw", inkColor);
+      el.classList.toggle("hi", inkTool === "highlighter");
+      el.classList.toggle("muted", inkTool === "eraser");
+    });
+    const d = inkSize <= 3 ? 5 : inkSize <= 5 ? 9 : 14;
+    $("inkCurDot").style.width = $("inkCurDot").style.height = d + "px";
+  }
   // A plain on/off switch. It used to mean "turn off" only while the
   // toolbar happened to be showing, and "reopen the toolbar" otherwise —
   // so putting the pen away took two taps and the first one looked like it
@@ -5430,6 +5590,7 @@
       inkTool = "pen"; inkColor = sw.dataset.inkColor;
       document.querySelectorAll(".ink-swatch").forEach(s=>s.classList.remove("active"));
       sw.classList.add("active");
+      syncInkChip(); closeInkFlyouts();
     });
   });
   document.querySelectorAll(".ink-swatch[data-ink-highlight]").forEach(sw=>{
@@ -5437,18 +5598,21 @@
       inkTool = "highlighter"; inkColor = sw.dataset.inkHighlight;
       document.querySelectorAll(".ink-swatch").forEach(s=>s.classList.remove("active"));
       sw.classList.add("active");
+      syncInkChip(); closeInkFlyouts();
     });
   });
   $("inkEraserBtn").addEventListener("click", ()=>{
     inkTool = "eraser";
     document.querySelectorAll(".ink-swatch").forEach(s=>s.classList.remove("active"));
     $("inkEraserBtn").classList.add("active");
+    syncInkChip(); closeInkFlyouts();
   });
   document.querySelectorAll(".ink-size-btn").forEach(b=>{
     b.addEventListener("click", ()=>{
       inkSize = parseFloat(b.dataset.inkSize);
       document.querySelectorAll(".ink-size-btn").forEach(x=>x.classList.remove("active"));
       b.classList.add("active");
+      syncInkChip(); closeInkFlyouts();
     });
   });
   $("inkUndoBtn").addEventListener("click", undoLastStroke);
@@ -5555,7 +5719,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "62";
+  const SW_VERSION = "63";
   if("serviceWorker" in navigator){
     // Only offer when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), so controller becomes non-null right
