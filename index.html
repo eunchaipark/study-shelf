@@ -1411,7 +1411,7 @@
     folders = await S.getJSON("app:folders", []);
     files = await S.getJSON("app:files", []);
     const tombs = await S.getJSON("app:pendingTombs", null);
-    pendingTombs = { ids: (tombs && tombs.ids) || {}, folders: (tombs && tombs.folders) || {} };
+    pendingTombs = { ids: (tombs && tombs.ids) || {}, folders: (tombs && tombs.folders) || {}, revive: (tombs && tombs.revive) || {} };
     // a library saved in a broken shape must not be able to hang the app on
     // every subsequent launch
     // titles saved before they were being cleaned still carry the markup
@@ -1430,6 +1430,13 @@
       const haveBody = new Set(bodyKeys);
       files.forEach(f=>{
         if(fileContentTs(f) > 0 && !haveBody.has("file-content:"+f.id)){ f.contentTs = 0; filesFixed = true; }
+        // The reverse: a body here under a clock that says "none". The older
+        // version stored a download before fetching its pictures and, when
+        // that fetch failed, never set the clock — so the body was neither
+        // used nor ever uploaded, and could be thrown away as missing. The
+        // oldest possible version keeps it: any real one in the cloud still
+        // wins, and if the cloud has none, this one goes up.
+        else if(f.contentTs === 0 && haveBody.has("file-content:"+f.id)){ f.contentTs = 1; filesFixed = true; }
       });
     }
     const reconciled = reconcileFolderTree();
@@ -1521,7 +1528,10 @@
      without the book seconds before the reason it was gone, and the other
      device took the absence for a book it had to upload again. A sync now
      writes these before it publishes the library. */
-  let pendingTombs = { ids: {}, folders: {} };
+  // revive: ids restored from a backup here, which must outrank a tombstone
+  // the cloud may hold for them — the restore can happen offline, where
+  // there is no tombstone to read and step past
+  let pendingTombs = { ids: {}, folders: {}, revive: {} };
   async function persistTombs(){ await S.setJSON("app:pendingTombs", pendingTombs); }
   // the newest change to a record that a delete has to outrank: the record
   // itself, its text, its ink or its highlights (ink and highlight saves
@@ -1545,6 +1555,8 @@
   // claim isn't contradicted again until the recheck window passes.
   const unbackedClaims = new Map();
   const UNBACKED_RECHECK_MS = 5*60*1000;
+  // books this session kept despite a tombstone, whose data it has re-sent
+  const revivedSent = new Set();
 
   let lastAuthError = null; // surfaced in the account rail so sign-in failures aren't silent
 
@@ -2067,13 +2079,19 @@
     for(let i = 0; i < s.length; i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
     return (h >>> 0).toString(36) + "." + keys.length;
   }
-  // id -> the signature of the pictures the cloud is known to hold
+  // id -> { sig, ver }: the pictures the cloud held alongside body version
+  // ver, as last seen here. Trusted only while the cloud's body is still
+  // that version — another device replacing the pictures moves the body on.
   const cloudAssetsSig = new Map();
+  function knownCloudSig(id, cloudVer){
+    const k = cloudAssetsSig.get(id);
+    return k && k.ver === cloudVer ? k.sig : null;
+  }
 
   // The body is labelled with the version the sync decided to send (ts),
   // not whatever the record says by the time the write happens: an edit
   // saved mid-upload would otherwise stamp its new version on the old text.
-  async function pushContentToCloud(uid, f, ts){
+  async function pushContentToCloud(uid, f, ts, cloudVer){
     const text = await S.getText("file-content:"+f.id);
     // returning quietly here counted as an upload, and the cloud then
     // advertised a body it was never sent
@@ -2084,12 +2102,20 @@
     // first, so a body that names them never arrives ahead of them.
     const assets = await S.getJSON("assets:"+f.id, null);
     const sig = assetsSig(assets);
-    if(cloudAssetsSig.get(f.id) !== sig){
-      if(sig) await writeChunked(uid, "assets", f.id, JSON.stringify(assets), { updatedAt: ts, sig });
-      else await deleteChunked(uid, "assets", f.id);
-      cloudAssetsSig.set(f.id, sig);
+    const known = knownCloudSig(f.id, cloudVer);
+    const meta = { updatedAt: ts };
+    if(sig){
+      if(known !== sig) await writeChunked(uid, "assets", f.id, JSON.stringify(assets), { updatedAt: ts, sig });
+      meta.assetsSig = sig;
+    } else if(known !== null){
+      // No pictures here — which may only mean they never reached this
+      // device. Whatever the cloud holds stays, and the body says so.
+      // Claiming "none" made every other device delete its own copy, the
+      // only one there was.
+      meta.assetsSig = known;
     }
-    await writeChunked(uid, "content", f.id, text, { updatedAt: ts, assetsSig: sig });
+    await writeChunked(uid, "content", f.id, text, meta);
+    if(meta.assetsSig !== undefined) cloudAssetsSig.set(f.id, { sig: meta.assetsSig, ver: ts });
   }
   // The library record only *claims* a version; the content document says
   // which one it really holds. Going by the claim is how a missing body
@@ -2103,43 +2129,50 @@
     if(!got || got.text == null) throw cloudMissing("클라우드에 본문 없음");
     const ver = typeof got.meta.updatedAt === "number" ? got.meta.updatedAt : null;
     if(ver != null && ver <= localTs) return { ver, stale: true };
-    // pictures only when the body says they differ from ours; a body from
-    // before signatures says nothing, so they are read as they always were
-    const sig = typeof got.meta.assetsSig === "string" ? got.meta.assetsSig : null;
-    let assets;   // undefined: keep ours · null: the book has none · object: take these
+    // Pictures only when the body says they differ from ours. A body from
+    // before signatures, or from a device that had none to describe, says
+    // nothing, and they are read as they always were. Pictures here are
+    // never deleted on another device's word: one that lacks them may
+    // simply never have received them.
+    const sig = typeof got.meta.assetsSig === "string" && got.meta.assetsSig ? got.meta.assetsSig : null;
+    let assets;   // undefined: keep ours · object: take these
     if(sig === null || sig !== assetsSig(await S.getJSON("assets:"+f.id, null))){
-      if(sig === "") assets = null;
-      else {
-        // a file may legitimately have no images, so a missing assets doc
-        // is not a failure
-        const gotAssets = await readChunked(uid, "assets", f.id);
-        if(gotAssets && gotAssets.text != null){ try{ assets = JSON.parse(gotAssets.text); }catch(e){} }
-      }
+      // a file may legitimately have no images, so a missing assets doc
+      // is not a failure
+      const gotAssets = await readChunked(uid, "assets", f.id);
+      if(gotAssets && gotAssets.text != null){ try{ assets = JSON.parse(gotAssets.text); }catch(e){} }
     }
     // checked after the network, right before writing: a save made here in
     // the meantime is newer than what arrived, and a deleted book stays so
     if(!files.includes(f) || fileContentTs(f) !== localTs) return { ver, superseded: true };
     await S.put("file-content:"+f.id, got.text);
-    if(assets === null) await S.del("assets:"+f.id);
-    else if(assets) await S.put("assets:"+f.id, assets);
-    if(sig !== null) cloudAssetsSig.set(f.id, sig);
+    if(assets && typeof assets === "object" && Object.keys(assets).length) await S.put("assets:"+f.id, assets);
+    if(sig !== null && ver != null) cloudAssetsSig.set(f.id, { sig, ver });
     return { ver, text: got.text };
   }
   async function pushHlToCloud(uid, f, idx, ts){
     const hl = await S.getJSON("hl:"+f.id+":"+idx, []);
     await writeChunked(uid, "hl", f.id+"_"+idx, JSON.stringify(hl || []), { updatedAt: ts });
   }
-  // Both mark pulls return null, writing nothing, when the chapter was
-  // marked here (or the book deleted) while the download ran: those marks
-  // are newer, and the next pass sends them.
+  // The mark pulls answer the way the body pull does: the version a
+  // chapter's marks really are is the one written on their document, not
+  // the library's claim. Labelled with the claim, marks uploaded just
+  // before a failed library write arrived wearing an older version than
+  // their own — both devices then showed equal clocks over different marks,
+  // and nothing ever moved again. { ver, n } once stored; { ver, stale }
+  // when ours are as new; { ver, superseded } when the chapter was marked
+  // here (or the book deleted) while the download ran.
+  function docVersion(got){ return typeof got.meta.updatedAt === "number" ? got.meta.updatedAt : null; }
   async function pullHlFromCloud(uid, f, idx, localTs){
     const got = await readChunked(uid, "hl", f.id+"_"+idx);
     if(!got || got.text == null) throw cloudMissing("클라우드에 하이라이트 없음");
+    const ver = docVersion(got);
+    if(ver != null && ver <= localTs) return { ver, stale: true };
     let list = [];
     try{ list = JSON.parse(got.text) || []; }catch(e){ list = []; }
-    if(!files.includes(f) || (hlTsMap(f)[idx] || 0) !== localTs) return null;
+    if(!files.includes(f) || (hlTsMap(f)[idx] || 0) !== localTs) return { ver, superseded: true };
     await S.put("hl:"+f.id+":"+idx, list);
-    return list.length;
+    return { ver, n: list.length };
   }
   async function pushInkToCloud(uid, f, idx, ts){
     const strokes = await S.getJSON("ink:"+f.id+":"+idx, []);
@@ -2148,10 +2181,12 @@
   async function pullInkFromCloud(uid, f, idx, localTs){
     const got = await readChunked(uid, "ink", f.id+"_"+idx);
     if(!got || got.text == null) throw cloudMissing("클라우드에 필기 없음");
+    const ver = docVersion(got);
+    if(ver != null && ver <= localTs) return { ver, stale: true };
     const strokes = decodeStrokes(got.text);
-    if(!files.includes(f) || (inkTsMap(f)[idx] || 0) !== localTs) return null;
+    if(!files.includes(f) || (inkTsMap(f)[idx] || 0) !== localTs) return { ver, superseded: true };
     await S.put("ink:"+f.id+":"+idx, strokes);
-    return strokes.length;
+    return { ver, n: strokes.length };
   }
 
   // A book on the shelf whose text isn't on this device. Whatever its clock
@@ -2213,6 +2248,8 @@
       const cloudFiles = cloud.files || [];
       const cloudFolders = cloud.folders || [];
       const delData = delSnap.exists() ? delSnap.data() : {};
+      // restores this pass acts on (one made while it runs waits for the next)
+      const revivedIds = Object.keys(pendingTombs.revive);
       // this device's own deletes count before the cloud has heard of them
       const fileTombs = Object.assign({}, delData.ids || {});
       const folderTombs = Object.assign({}, delData.folders || {});
@@ -2241,6 +2278,8 @@
       const cloudHlTs = {};       // the same, for text highlights
       const mergedFiles = [];
       const purged = [];
+      const contradicted = [];    // [id, claim] published as "no body" this pass
+      const ghosts = [];          // cloud entries hidden here but published back unchanged
 
       for(const id of allIds){
         const l = localById.get(id), c = cloudById.get(id);
@@ -2271,18 +2310,54 @@
         } else if(l) rec = l;
         else { rec = Object.assign({}, c); rec.inkChapters = []; rec.hlChapters = []; }
 
-        if(fileTombstoned(fileTombs[id], rec)){ if(l) purged.push(rec); continue; }
+        // A deleted book comes back only if edited after the delete — and
+        // only if there is a book to bring back. With no body here and none
+        // in the cloud (its upload never landed, and the one device that held
+        // it deleted it), "coming back" made a shelf entry nobody can open.
+        const tomb = fileTombs[id];
+        // restored from a backup here after being deleted: the restore is the
+        // newer decision, whatever the tombstone says
+        if(tomb && pendingTombs.revive[id] && (rec.updatedTs || 0) <= tombTs(tomb)) rec.updatedTs = tombTs(tomb) + 1;
+        const ghost = !!tomb && !fileTombstoned(tomb, rec) && lContent === 0 && cContent === 0;
+        if(tomb && (ghost || fileTombstoned(tomb, rec))){
+          // what this device stores, by its own clocks — the merged record may
+          // carry the cloud's by now, and keys missed here outlive the book
+          if(l) purged.push({ id, ink: Object.keys(lInk), hl: Object.keys(lHl) });
+          // A ghost is hidden here but its library entry is passed through as
+          // the cloud has it: a device on the older version keeps such a book,
+          // and removing the entry made the two rewrite the library at each
+          // other for as long as that device ran.
+          if(ghost && c) ghosts.push(c);
+          continue;
+        }
+        // Kept against a tombstone because ink, highlights or the text were
+        // edited after the delete. The older version weighs only updatedTs
+        // against a tombstone and would delete it again, so updatedTs is moved
+        // past the delete — once, and then every version agrees it stays.
+        if(tomb && (rec.updatedTs || 0) <= tombTs(tomb)) rec.updatedTs = tombTs(tomb) + 1;
+        // Kept despite a tombstone: edited here after the delete. The device
+        // that deleted it removes the book's documents from the cloud once
+        // its tombstone is in, so what the library still claims may already
+        // be gone. Whatever this device holds for it goes up again, once.
+        // (Only for a recent delete: a tombstone stays in the cloud for good,
+        // and a book revived long ago needn't be re-sent every session — if
+        // its documents really are missing, the device that finds so says.)
+        const recentTomb = !!tomb && typeof tomb.at === "number" && Date.now() - tomb.at < 7*24*3600*1000;
+        const revived = recentTomb && !!l && !revivedSent.has(id);
+        if(revived) revivedSent.add(id);
+        const cloudSays = (lt, ct)=> (revived && lt > 0) ? 0 : ct;
 
         // content and ink each resolve on their own clock, so reading a
         // book on one device cannot roll back an unsynced edit made on another
+        const cBody = cloudSays(lContent, cContent);
         rec.contentTs = lContent;
-        if(cContent > lContent) pullContent.push({ rec, ts: cContent });
-        else if(lContent > cContent) pushContent.push({ rec, ts: lContent });
-        cloudContentTs[id] = cContent;
+        if(cBody > lContent) pullContent.push({ rec, ts: cBody });
+        else if(lContent > cBody) pushContent.push({ rec, ts: lContent });
+        cloudContentTs[id] = cBody;
 
         const localInk = {}, cloudInk = {};
         for(const k of new Set([...Object.keys(lInk), ...Object.keys(cInk)])){
-          const lt = lInk[k]||0, ct = cInk[k]||0;
+          const lt = lInk[k]||0, ct = cloudSays(lt, cInk[k]||0);
           localInk[k] = lt;
           cloudInk[k] = ct;
           if(ct > lt) pullInk.push({ rec, idx:+k, ts:ct, lts:lt });
@@ -2293,7 +2368,7 @@
 
         const localHl = {}, cloudHl = {};
         for(const k of new Set([...Object.keys(lHl), ...Object.keys(cHl)])){
-          const lt = lHl[k]||0, ct = cHl[k]||0;
+          const lt = lHl[k]||0, ct = cloudSays(lt, cHl[k]||0);
           localHl[k] = lt;
           cloudHl[k] = ct;
           if(ct > lt) pullHl.push({ rec, idx:+k, ts:ct, lts:lt });
@@ -2314,11 +2389,12 @@
       // the merge can leave cycles and orphans behind — see reconcileFolderTree
       reconcileFolderTree();
 
-      for(const f of purged){
-        await S.del("file-content:"+f.id);
-        await S.del("assets:"+f.id);
-        for(const idx of Object.keys(inkTsMap(f))) await S.del("ink:"+f.id+":"+idx);
-        for(const idx of Object.keys(hlTsMap(f))) await S.del("hl:"+f.id+":"+idx);
+      for(const p of purged){
+        dropCachedContent(p.id);
+        await S.del("file-content:"+p.id);
+        await S.del("assets:"+p.id);
+        for(const idx of p.ink) await S.del("ink:"+p.id+":"+idx);
+        for(const idx of p.hl) await S.del("hl:"+p.id+":"+idx);
       }
 
       // Every transfer is isolated. One book too large for a document, or a
@@ -2344,9 +2420,10 @@
           // a save landing during the write above is the newer of the two
           if(fileContentTs(job.rec) !== localTs) continue;
           job.rec.contentTs = ts;
-          // the chapter count belongs to the body that was kept, whichever
-          // device's record the rest of the fields came from
-          job.rec.chapterCount = chapterChunks(got.text, job.rec.title).length;
+          // chapterCount is left as the record has it. Recounting here, with
+          // no clock moving, made two devices that counted differently (a
+          // book uploaded by an older splitter) rewrite the library at each
+          // other for good.
           if(id === openFileId) openContentChanged = true;
         }catch(e){
           if(e && e.cloudMissing){
@@ -2360,7 +2437,10 @@
             // still runs every pass, so a real re-upload is picked up at once.
             const seen = unbackedClaims.get(id);
             if(!(seen && seen.claim === job.ts && Date.now() - seen.at < UNBACKED_RECHECK_MS)){
-              unbackedClaims.set(id, { claim: job.ts, at: Date.now() });
+              // remembered only once the library write carrying it lands: a
+              // correction that failed to send had been counted as made, and
+              // nothing tried again for five minutes
+              contradicted.push([id, job.ts]);
               cloudContentTs[id] = 0;
             }
           }
@@ -2369,7 +2449,7 @@
       }
       for(const job of pushContent){
         try{
-          await pushContentToCloud(uid, job.rec, job.ts);
+          await pushContentToCloud(uid, job.rec, job.ts, cloudContentTs[job.rec.id] || 0);
           cloudContentTs[job.rec.id] = job.ts;
         }catch(e){
           // deleted while its upload was waiting: nothing went wrong
@@ -2379,15 +2459,28 @@
       }
       // a pull for the chapter on screen has to reach the reader too
       const onScreen = (job)=> activeFile && job.rec.id === activeFile.id && job.idx === chapterIdx;
+      // what a mark pull found, applied to one kind's clocks; true if stored
+      const settleMarkPull = (job, got, cloudTs, pushList, kind)=>{
+        const ver = got.ver != null ? got.ver : job.ts;
+        if(cloudTs[job.rec.id]) cloudTs[job.rec.id][job.idx] = ver;
+        if(got.stale){
+          // ours is at least as new as what the cloud really holds: send it
+          if(job.lts > got.ver) pushList.push({ rec: job.rec, idx: job.idx, ts: job.lts });
+          return false;
+        }
+        // marked here meanwhile: those are newer, and the next pass sends them
+        if(got.superseded || (job.rec[kind + "Ts"][job.idx] || 0) !== job.lts) return false;
+        job.rec[kind + "Ts"][job.idx] = ver;
+        const field = kind + "Chapters";
+        const set = new Set(job.rec[field] || []);
+        if(got.n > 0) set.add(job.idx); else set.delete(job.idx);
+        job.rec[field] = Array.from(set).sort((a,b)=>a-b);
+        return true;
+      };
       for(const job of pullInk){
         try{
-          const n = await pullInkFromCloud(uid, job.rec, job.idx, job.lts);
-          if(n === null || (job.rec.inkTs[job.idx] || 0) !== job.lts) continue;   // drawn on here meanwhile
-          job.rec.inkTs[job.idx] = job.ts;
-          const set = new Set(job.rec.inkChapters || []);
-          if(n > 0) set.add(job.idx); else set.delete(job.idx);
-          job.rec.inkChapters = Array.from(set).sort((a,b)=>a-b);
-          if(onScreen(job)) openMarksChanged = true;
+          const got = await pullInkFromCloud(uid, job.rec, job.idx, job.lts);
+          if(settleMarkPull(job, got, cloudInkTs, pushInk, "ink") && onScreen(job)) openMarksChanged = true;
         }catch(e){
           if(e && e.cloudMissing && cloudInkTs[job.rec.id]) cloudInkTs[job.rec.id][job.idx] = 0;
           fail(e, "ink pull failed", job.rec.id, job.idx);
@@ -2401,13 +2494,8 @@
       }
       for(const job of pullHl){
         try{
-          const n = await pullHlFromCloud(uid, job.rec, job.idx, job.lts);
-          if(n === null || (job.rec.hlTs[job.idx] || 0) !== job.lts) continue;    // marked here meanwhile
-          job.rec.hlTs[job.idx] = job.ts;
-          const set = new Set(job.rec.hlChapters || []);
-          if(n > 0) set.add(job.idx); else set.delete(job.idx);
-          job.rec.hlChapters = Array.from(set).sort((a,b)=>a-b);
-          if(onScreen(job)) openMarksChanged = true;
+          const got = await pullHlFromCloud(uid, job.rec, job.idx, job.lts);
+          if(settleMarkPull(job, got, cloudHlTs, pushHl, "hl") && onScreen(job)) openMarksChanged = true;
         }catch(e){
           if(e && e.cloudMissing && cloudHlTs[job.rec.id]) cloudHlTs[job.rec.id][job.idx] = 0;
           fail(e, "highlight pull failed", job.rec.id, job.idx);
@@ -2433,7 +2521,7 @@
           // edited on another device since it was deleted here: it stays
           if(liveIds.has(id)){ delete pendingTombs.ids[id]; continue; }
           (patch.ids = patch.ids || {})[id] = { ts: Math.max(t.ts, tombTs(delData.ids && delData.ids[id])), at: t.at, v: 2 };
-          flushed.push(id);
+          flushed.push([id, t]);   // the tombstone itself, held across the awaits below
         }
         for(const id of tombFolderIds){
           const t = pendingTombs.folders[id];
@@ -2445,13 +2533,26 @@
           // the same time used to each overwrite the other's whole list
           if(patch.ids || patch.folders) await setDoc(delRef, patch, { merge: true });
           for(const id of Object.keys(patch.folders || {})) delete pendingTombs.folders[id];
-          for(const id of flushed){
-            try{ await deleteCloudPayloads(uid, id, pendingTombs.ids[id]); delete pendingTombs.ids[id]; }
-            catch(e){ fail(e, "cloud delete failed", id); }   // the tombstone stands; the leftovers go next time
+          for(const [id, t] of flushed){
+            t.written = true;
+            try{
+              await deleteCloudPayloads(uid, id, t);
+              if(pendingTombs.ids[id] === t) delete pendingTombs.ids[id];
+            }catch(e){ fail(e, "cloud delete failed", id); }   // the tombstone stands; the leftovers go next time
           }
         }catch(e){ fail(e, "tombstone write failed"); }
         await persistTombs();
       }
+      // Deletes the cloud hasn't been told about yet — the tombstone write
+      // failed, or the delete came while this pass ran — keep their library
+      // entries as the cloud has them. Published without them and without
+      // the reason, the other device took them for books of its own to
+      // upload again, and the two went round in circles.
+      for(const c of cloudFiles){
+        const t = pendingTombs.ids[c.id];
+        if(t && !t.written) ghosts.push(c);
+      }
+      const keptFolders = cloudFolders.filter(c=> pendingTombs.folders[c.id] && !folders.some(fo=> fo.id === c.id));
 
       // `files` *is* mergedFiles, so anything created while the transfers
       // ran is already in the payload — but its body has not been uploaded,
@@ -2472,12 +2573,13 @@
       // publishes 0 and the next pass sees local > cloud and uploads it.
       // Built from the live arrays, not the merged snapshot: a book deleted
       // while this pass ran must not be published back.
+      const liveNow = new Set(files.map(f=> f.id));
       const payloadFiles = files.map(f=> Object.assign({}, f, {
         contentTs: cloudContentTs[f.id] || 0,
         inkTs: cloudInkTs[f.id] || {},
         hlTs: cloudHlTs[f.id] || {},
-      }));
-      const payloadFolders = folders.slice();
+      })).concat(ghosts.filter((g, k)=> !liveNow.has(g.id) && ghosts.findIndex(x=> x.id === g.id) === k));
+      const payloadFolders = folders.concat(keptFolders);
 
       // Skip a no-op write. Besides saving quota on the periodic poll, this
       // is what keeps the live listener from ping-ponging: two devices that
@@ -2488,10 +2590,17 @@
           lastPublishedAt = Date.now();
           await setDoc(libRef, { folders: payloadFolders, files: payloadFiles, updatedAt: lastPublishedAt });
           seenCloudAt = lastPublishedAt;
+          for(const [id, claim] of contradicted) unbackedClaims.set(id, { claim, at: Date.now() });
         } else {
           console.warn("library publish held back: too many in a minute");
           publishHeldBack = true;
         }
+      }
+
+      // a restore marker has done its work once a pass has published past it
+      if(revivedIds.length && !publishHeldBack){
+        for(const id of revivedIds) delete pendingTombs.revive[id];
+        await persistTombs();
       }
 
       // prefs: last-writer-wins by timestamp
@@ -3144,6 +3253,11 @@
     if(hit && hit.ts === ts) return hit;
     dropCachedContent(f.id);
     const text = (await S.getText("file-content:"+f.id)) || "";
+    // two scans can miss the same book at once; the second must not count
+    // it into the budget again
+    const raced = contentCache.get(f.id);
+    if(raced && raced.ts === ts) return raced;
+    dropCachedContent(f.id);
     const entry = { ts, text, lower: null };
     if(contentCacheChars + text.length * 2 <= CONTENT_CACHE_CHARS){
       contentCache.set(f.id, entry);
@@ -3438,7 +3552,9 @@
         try{ name = decodeURIComponent(d); }catch(e){}
         return assets[d] || assets[name] || assets[name.split("/").pop()] || null;
       };
-      out = out.replace(/(!\[[^\]\n]*\]\()(<[^>\n]*>|[^)\s]+)/g, (m, pre, dest)=>{ const url = lookup(dest); return url ? pre + url : m; });
+      // alt text may carry escaped brackets (as mdLinkText writes them), and
+      // a bare path one level of parentheses ("image(1).png")
+      out = out.replace(/(!\[(?:\\.|[^\]\\\n])*\]\()(<[^>\n]*>|(?:[^()\s]|\([^()\s]*\))+)/g, (m, pre, dest)=>{ const url = lookup(dest); return url ? pre + url : m; });
       out = out.replace(/(<img\b[^>]*?\bsrc=["'])([^"']+)/gi, (m, pre, src)=>{ const url = lookup(src); return url ? pre + url : m; });
     }
     downloadBlob(safeName(f.title) + ".md", new Blob([out], { type: "text/markdown;charset=utf-8" }));
@@ -3568,6 +3684,7 @@
       if(!mine){
         rec = Object.assign(fields, { contentTs: bodyTs, inkTs: {}, hlTs: {}, inkChapters: [], hlChapters: [] });
         if(pendingTombs.ids[f.id]) delete pendingTombs.ids[f.id];
+        pendingTombs.revive[f.id] = true;
         const tomb = cloudTombs[f.id];
         if(tomb && fileTombstoned(tomb, rec)) rec.updatedTs = Math.max(rec.updatedTs || 0, tombTs(tomb) + 1);
         files.push(rec);
@@ -3806,6 +3923,7 @@
       // recorded before anything else, and kept until a sync has told the
       // cloud — whenever that is — so the delete can't be lost on the way
       pendingTombs.ids[f.id] = tombFor(f);
+      delete pendingTombs.revive[f.id];   // deleted again since it was restored
       files = files.filter(x=>x.id!==f.id);
       closeAllOverlays();
       renderAll();
@@ -3956,6 +4074,11 @@
     editingFileId = null;
     if(editorReturnScreen==="reader" && activeFile){
       readerScreen.classList.remove("hidden");
+      // Marks may have arrived while the editor covered the reader (a hidden
+      // reader isn't refreshed), and its next save would write the stale
+      // list over them; the width may have changed too. Read both afresh.
+      readerLastWidth = window.innerWidth;
+      renderChapter(chapterIdx, false, 0, false);
     } else {
       libraryScreen.classList.remove("hidden");
       renderAll();
@@ -4117,63 +4240,106 @@
      An edit that added or removed a chapter ahead of them — even one line
      above the first heading, which creates a "들어가며" chapter — left every
      mark after it painted onto the wrong chapter. Old chapters are matched
-     to new ones by title, and a chapter renamed in place keeps its slot. */
+     to new ones by what they contain: the same text, else a title found
+     once on each side, else most of their lines carried over. Order is not
+     assumed, so two chapters swapped still find each other. */
+  function chapterLines(t){ return t.split("\n").map(s=> s.trim()).filter(s=> s.length > 3); }
+  // the share of a's lines that also appear in b
+  function linesKept(a, b){
+    const la = chapterLines(a);
+    if(!la.length) return 0;
+    const lb = new Set(chapterLines(b));
+    let n = 0;
+    for(const l of la) if(lb.has(l)) n++;
+    return n / la.length;
+  }
   function matchChapters(oldChunks, newChunks){
-    const n = oldChunks.length, m = newChunks.length;
-    const L = Array.from({ length: n + 1 }, ()=> new Array(m + 1).fill(0));
-    for(let i = n - 1; i >= 0; i--){
-      for(let j = m - 1; j >= 0; j--){
-        L[i][j] = oldChunks[i].title === newChunks[j].title ? L[i+1][j+1] + 1 : Math.max(L[i+1][j], L[i][j+1]);
+    const map = new Map(), used = new Set();   // old index -> new index
+    const take = (i, j)=>{ map.set(i, j); used.add(j); };
+    const byText = new Map();
+    newChunks.forEach((c, j)=>{ if(!byText.has(c.text)) byText.set(c.text, []); byText.get(c.text).push(j); });
+    oldChunks.forEach((c, i)=>{ const js = byText.get(c.text); if(js && js.length) take(i, js.shift()); });
+    const count = (list, key)=> list.filter(x=> x.title === key).length;
+    const oldLeft = ()=> oldChunks.map((c, i)=> ({ i, title: c.title })).filter(x=> !map.has(x.i));
+    const newLeft = ()=> newChunks.map((c, j)=> ({ j, title: c.title })).filter(x=> !used.has(x.j));
+    const ol = oldLeft(), nl = newLeft();
+    for(const o of ol){
+      if(count(ol, o.title) !== 1 || count(nl, o.title) !== 1) continue;
+      const n = nl.find(x=> x.title === o.title);
+      if(!used.has(n.j)) take(o.i, n.j);
+    }
+    for(const o of oldLeft()){
+      let best = -1, bestScore = 0.5;
+      for(const n of newLeft()){
+        const s = linesKept(oldChunks[o.i].text, newChunks[n.j].text);
+        if(s > bestScore){ best = n.j; bestScore = s; }
       }
+      if(best >= 0) take(o.i, best);
     }
-    const map = new Map();   // old index -> new index
-    // chapters between two title matches pair up in order: a renamed one
-    const pairGap = (i0, i1, j0, j1)=>{ for(let k = 0; i0 + k < i1 && j0 + k < j1; k++) map.set(i0 + k, j0 + k); };
-    let i = 0, j = 0, gapI = 0, gapJ = 0;
-    while(i < n && j < m){
-      if(oldChunks[i].title === newChunks[j].title){
-        pairGap(gapI, i, gapJ, j);
-        map.set(i, j);
-        i++; j++; gapI = i; gapJ = j;
-      } else if(L[i+1][j] >= L[i][j+1]) i++;
-      else j++;
-    }
-    pairGap(gapI, n, gapJ, m);
     return map;
   }
-  // Moves each chapter's marks to its new position. Every slot that changed
-  // gets a fresh clock, so sync carries the move to the other devices
-  // instead of their old copies coming back. Marks of a chapter that no
-  // longer exists go with it.
-  async function moveChapterMarks(f, map, oldCount){
-    const now = Date.now();
+  // Moves each chapter's marks to its new position. Every slot that
+  // changed gets a fresh clock, so sync carries the move to the other
+  // devices instead of their old copies coming back. Nothing is ever
+  // dropped: a chapter with no counterpart (merged into another, or
+  // rewritten past recognition) hands each highlight to the chapter that
+  // now holds its words, and its ink to the chapter that took most of its
+  // text — or leaves both where they were when that slot is still free.
+  async function moveChapterMarks(f, oldChunks, newChunks, map){
+    const now = Date.now(), oldCount = oldChunks.length, newCount = newChunks.length;
+    if(!newCount) return;
+    const plainNew = newChunks.map(c=> plainish(c.text));
     for(const kind of ["hl", "ink"]){
       const tsMap = kind === "hl" ? hlTsMap(f) : inkTsMap(f);
       const field = kind + "Chapters";
-      const held = new Set([...Object.keys(tsMap).map(Number), ...(f[field] || [])]);
-      const moving = [...held].filter(idx=> idx < oldCount && map.get(idx) !== idx);
-      if(!moving.length) continue;
-      const incoming = new Map();
-      for(const idx of moving){
-        const to = map.get(idx);
-        const list = await S.getJSON(kind + ":" + f.id + ":" + idx, []);
-        if(to !== undefined && Array.isArray(list) && list.length) incoming.set(to, list);
+      const held = [...new Set([...Object.keys(tsMap).map(Number), ...(f[field] || [])])].filter(i=> i < oldCount);
+      const lists = new Map();
+      for(const i of held){
+        const list = await S.getJSON(kind + ":" + f.id + ":" + i, []);
+        if(Array.isArray(list) && list.length) lists.set(i, list);
+      }
+      if(![...lists.keys()].some(i=> map.get(i) !== i)) continue;   // nothing moves
+      const arriving = new Set([...lists.keys()].filter(i=> map.has(i)).map(i=> map.get(i)));
+      const homeFor = (i)=>{
+        let best = -1, bestScore = 0;
+        newChunks.forEach((c, j)=>{ const s = linesKept(oldChunks[i].text, c.text); if(s > bestScore){ best = j; bestScore = s; } });
+        if(best >= 0) return best;
+        return (i < newCount && !arriving.has(i)) ? i : Math.min(i, newCount - 1);
+      };
+      const dest = new Map();
+      const add = (j, items)=>{ if(!dest.has(j)) dest.set(j, []); dest.get(j).push(...items); };
+      for(const [i, list] of lists){
+        if(map.has(i)){ add(map.get(i), list); continue; }
+        if(kind === "hl"){
+          for(const h of list){
+            const words = h && h.text ? plainish(h.text) : "";
+            let at = -1;
+            if(words) plainNew.forEach((t, j)=>{ if(t.includes(words) && (at < 0 || Math.abs(j - i) < Math.abs(at - i))) at = j; });
+            add(at >= 0 ? at : homeFor(i), [h]);
+          }
+        } else add(homeFor(i), list);
       }
       const nextTs = Object.assign({}, tsMap);
       const chapters = new Set(f[field] || []);
-      // arrivals first, departures after: a write that fails part-way
-      // leaves a mark in two places rather than in none
-      for(const [idx, list] of incoming){
-        await S.put(kind + ":" + f.id + ":" + idx, list);
-        chapters.add(idx); nextTs[idx] = now;
-      }
-      for(const idx of moving){
-        if(incoming.has(idx)) continue;
-        await S.del(kind + ":" + f.id + ":" + idx);
-        chapters.delete(idx); nextTs[idx] = now;
+      const changed = [...new Set([...lists.keys(), ...dest.keys()])]
+        .filter(j=> JSON.stringify(dest.get(j) || []) !== JSON.stringify(lists.get(j) || []));
+      // clocks first, so a download of one of these chapters checking in
+      // between knows it has been overtaken (see saveHighlights)
+      for(const j of changed){
+        nextTs[j] = now;
+        if(dest.get(j) && dest.get(j).length) chapters.add(j); else chapters.delete(j);
       }
       f[kind + "Ts"] = nextTs;
       f[field] = [...chapters].sort((a, b)=> a - b);
+      // arrivals first, departures after: a write that fails part-way
+      // leaves a mark in two places rather than in none
+      for(const j of changed){
+        const list = dest.get(j);
+        if(list && list.length) await S.put(kind + ":" + f.id + ":" + j, list);
+      }
+      for(const j of changed){
+        if(!(dest.get(j) && dest.get(j).length)) await S.del(kind + ":" + f.id + ":" + j);
+      }
     }
   }
 
@@ -4204,13 +4370,20 @@
     const now = Date.now();
     if(existing && !changedElsewhere){
       const f = existing;
-      try{ await S.put("file-content:"+f.id, text); }catch(e){ failed(); return; }
+      // The clock moves the moment the write starts, not after it: a
+      // download checking in between saw the old clock, wrote the other
+      // device's text over this save, and the save then stamped that text
+      // as its own — the typing was gone everywhere. Put back on failure.
+      const was = { contentTs: f.contentTs, updatedTs: f.updatedTs };
+      f.contentTs = now; f.updatedTs = now;
+      try{ await S.put("file-content:"+f.id, text); }
+      catch(e){ f.contentTs = was.contentTs; f.updatedTs = was.updatedTs; failed(); return; }
       if(hasAssets){ try{ await S.put("assets:"+f.id, usedAssets); }catch(e){} }
       else await S.del("assets:"+f.id);
       dropCachedContent(f.id);
       const oldChunks = chapterChunks(editorOriginalText, editorOriginalTitle.trim() || f.title);
       const map = matchChapters(oldChunks, chapters);
-      try{ await moveChapterMarks(f, map, oldChunks.length); }catch(e){ console.warn("moving marks failed", e); }
+      try{ await moveChapterMarks(f, oldChunks, chapters, map); }catch(e){ console.warn("moving marks failed", e); }
       if(f.progress && typeof f.progress.chapterIdx === "number"){
         const to = map.get(f.progress.chapterIdx);
         let idx = to !== undefined ? to : f.progress.chapterIdx;
@@ -4377,14 +4550,23 @@
   }
 
   // Notes saved by older Windows tools are often CP949 rather than UTF-8,
-  // and read as UTF-8 every Korean character came out as "�". UTF-8 is
-  // tried strictly first, so a genuine UTF-8 file is never second-guessed.
+  // and read as UTF-8 every Korean character came out as "�". A byte-order
+  // mark decides first (Notepad's "Unicode" is UTF-16); then UTF-8, strictly;
+  // and CP949 only when UTF-8 fails nearly everywhere there is non-ASCII
+  // text — one stray byte in a UTF-8 note is one "�", not a CP949 file.
   function decodeText(buf){
-    try{ return new TextDecoder("utf-8", { fatal: true }).decode(buf); }
-    catch(e){
-      try{ return new TextDecoder("euc-kr").decode(buf); }
-      catch(e2){ return new TextDecoder("utf-8").decode(buf); }
+    const b = new Uint8Array(buf);
+    if(b[0] === 0xFF && b[1] === 0xFE) return new TextDecoder("utf-16le").decode(buf);
+    if(b[0] === 0xFE && b[1] === 0xFF) return new TextDecoder("utf-16be").decode(buf);
+    try{ return new TextDecoder("utf-8", { fatal: true }).decode(buf); }catch(e){}
+    const loose = new TextDecoder("utf-8").decode(buf);
+    let nonAscii = 0;
+    for(let i = 0; i < b.length; i++) if(b[i] >= 0x80) nonAscii++;
+    const broken = (loose.match(/�/g) || []).length;
+    if(broken >= Math.max(2, nonAscii * 0.3)){
+      try{ return new TextDecoder("euc-kr").decode(buf); }catch(e){}
     }
+    return loose;
   }
   // The book's title: its first "# " heading outside a code block. A plain
   // pattern match also found "# install deps" inside a shell snippet, and
@@ -5366,15 +5548,17 @@
   // Book, chapter and list are all taken before the write waits. A turn
   // landing during that wait used to move the new chapter's clock instead,
   // and the chapter actually marked was never sent.
+  // The clock moves before the write, in the same moment, so a download of
+  // this chapter that checks in between knows it has been overtaken.
   async function saveHighlights(){
     const f = activeFile, idx = chapterIdx, list = highlights;
     if(!f) return;
-    await S.setJSON(hlKey(f.id, idx), list);
     const chapters = new Set(f.hlChapters || []);
     if(list.length) chapters.add(idx); else chapters.delete(idx);
     f.hlChapters = Array.from(chapters).sort((a,b)=>a-b);
     f.hlTs = Object.assign({}, hlTsMap(f));
     f.hlTs[idx] = Date.now();
+    await S.setJSON(hlKey(f.id, idx), list);
     await persistFiles(MARKS_SYNC_DELAY);
   }
 
@@ -5594,6 +5778,7 @@
   let inkActivePointerId = null;
   let inkActiveStylusId = null;   // palm rejection: pointerId of the stylus currently down
   let inkLastPenActivityTs = 0;   // palm rejection: ignore touch shortly after/around pen use
+  let inkLastPenContactTs = 0;    // the same, counting only the pen touching the glass
   let inkRedoStack = [];          // per-chapter; a fresh stroke clears it, like any undo/redo stack
   // the two-finger gesture (scroll, or a sideways page turn) while the pen is out
   let inkGesture = null;            // { lastX, lastY, dx, dy, horizontal, fingers } — sticky until every finger lifts
@@ -5624,12 +5809,13 @@
     // everything read before the wait, as in saveHighlights
     const f = activeFile, idx = chapterIdx, strokes = inkStrokes;
     if(!f) return;
-    await S.setJSON("ink:"+f.id+":"+idx, strokes);
+    // clock first, as in saveHighlights
     const set = new Set(f.inkChapters || []);
     if(strokes.length > 0) set.add(idx); else set.delete(idx);
     f.inkChapters = Array.from(set).sort((a,b)=>a-b);
     f.inkTs = Object.assign({}, inkTsMap(f));
     f.inkTs[idx] = Date.now();
+    await S.setJSON("ink:"+f.id+":"+idx, strokes);
     await persistFiles(MARKS_SYNC_DELAY);
   }
 
@@ -6066,7 +6252,9 @@
     // resting beside the pen (two contacts, or one where the browser lists
     // the pen as a touch too) was read as the two-finger gesture, which
     // threw the stroke away and scrolled the page out from under it.
-    if(inkActiveStylusId !== null || Date.now() - inkLastPenActivityTs < 700) return;
+    // (Touching, not hovering: a pen held above the glass reports moves too,
+    // and counting those froze two-finger scrolling for S Pen users.)
+    if(inkActiveStylusId !== null || Date.now() - inkLastPenContactTs < 700) return;
     let fingers = 0;
     for(let i = 0; i < e.touches.length; i++) if(e.touches[i].touchType !== "stylus") fingers++;
     if(fingers < 2) return;
@@ -6142,7 +6330,7 @@
         const recentPen = Date.now()-inkLastPenActivityTs < 700;
         if(inkActiveStylusId!==null || recentPen) return;
       }
-      if(e.pointerType==="pen"){ inkActiveStylusId = e.pointerId; inkLastPenActivityTs = Date.now(); }
+      if(e.pointerType==="pen"){ inkActiveStylusId = e.pointerId; inkLastPenActivityTs = inkLastPenContactTs = Date.now(); }
       e.preventDefault();
       if(layoutInkWindow(false)) redrawInk();
       const barrelHeld = isBarrelHeld(e);
@@ -6161,6 +6349,7 @@
       if(e.pointerType==="touch" && inkGesture) return;   // the hand is scrolling or turning the page
       if(e.pointerType==="pen"){
         inkLastPenActivityTs = Date.now();
+        if((e.buttons & 1) || e.pressure > 0) inkLastPenContactTs = inkLastPenActivityTs;
         if(e.buttons !== inkLastLoggedButtons){ inkDebugLog("pen move: button="+e.button+" buttons="+e.buttons); inkLastLoggedButtons = e.buttons; }
       }
       // Mid-stroke button toggle: pressing/releasing the barrel button
@@ -6510,11 +6699,14 @@
       takeSentinelBack();
     }
   }
+  let backGuardSkipToken = 0;
   function takeSentinelBack(){
     backGuardSkip = true;
+    const token = ++backGuardSkipToken;
     try{ history.back(); }catch(e){ backGuardSkip = false; return; }
     // should its popstate never come, the guard must not stay switched off
-    setTimeout(()=>{ if(backGuardSkip){ backGuardSkip = false; syncBackGuard(); } }, 1500);
+    // (only this call's own wait: a later one's is its own business)
+    setTimeout(()=>{ if(backGuardSkip && token === backGuardSkipToken){ backGuardSkip = false; syncBackGuard(); } }, 1500);
   }
 
   window.addEventListener("popstate", ()=>{
@@ -6537,7 +6729,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "68";
+  const SW_VERSION = "69";
   if("serviceWorker" in navigator){
     // Only offer when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), so controller becomes non-null right

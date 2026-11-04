@@ -1,8 +1,8 @@
 // 서재 — app-shell service worker.
 // Precaches the shell (HTML/CSS-in-HTML/JS/icons/vendor lib) so the reader still
 // opens offline; book content itself lives in IndexedDB, not here.
-const SHELL_CACHE = "seojae-shell-v68";
-const RUNTIME_CACHE = "seojae-runtime-v68";
+const SHELL_CACHE = "seojae-shell-v69";
+const RUNTIME_CACHE = "seojae-runtime-v69";
 // The Firebase SDK is fetched from a versioned URL, so a copy never goes
 // stale — but it lived in the runtime cache, which every deploy deletes.
 // The first offline launch after an update then had no SDK, and sync stayed
