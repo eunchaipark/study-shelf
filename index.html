@@ -1313,6 +1313,13 @@
       tx.onerror = ()=> reject(tx.error);
     }));
   }
+  function idbKeys(){
+    return openDB().then(db => new Promise((resolve, reject)=>{
+      const req = db.transaction(STORE, "readonly").objectStore(STORE).getAllKeys();
+      req.onsuccess = ()=> resolve(req.result || []);
+      req.onerror = ()=> reject(req.error);
+    }));
+  }
 
   // Every write swallowed its error, so a full quota — very reachable once
   // books carry images — or storage blocked in a private window produced an
@@ -1338,7 +1345,10 @@
       try{ const v = await idbGet(key); return v===undefined ? null : v; }catch(e){ return null; }
     },
     async setText(key, val){ try{ await idbSet(key, val); }catch(e){ storageFailed(e); } },
-    async del(key){ try{ await idbDel(key); }catch(e){} }
+    async del(key){ try{ await idbDel(key); }catch(e){} },
+    // null when the store can't be listed, so a caller can tell "nothing
+    // there" from "couldn't look"
+    async keys(){ try{ return await idbKeys(); }catch(e){ return null; } }
   };
   /* A heading is markdown, but a title is a label: the shelf card, the
      reader's top bar, the table of contents and the search results all
@@ -1391,12 +1401,24 @@
     // a library saved in a broken shape must not be able to hang the app on
     // every subsequent launch
     // titles saved before they were being cleaned still carry the markup
-    let titlesFixed = false;
+    let filesFixed = false;
     files.forEach(f=>{
       const clean = stripInlineMd(f.title);
-      if(clean && clean !== f.title){ f.title = clean; titlesFixed = true; }
+      if(clean && clean !== f.title){ f.title = clean; filesFixed = true; }
     });
-    if(titlesFixed) await S.setJSON("app:files", files);
+    // A record's contentTs says which body this device holds. A sync that
+    // failed to download a book used to leave that clock reading as if it
+    // had succeeded, so the book sat on the shelf, unopenable, and was never
+    // fetched again. Nothing is syncing yet at this point, so correcting
+    // the clock here can't race a download or an upload.
+    const keys = await S.keys();
+    if(keys){
+      const haveBody = new Set(keys);
+      files.forEach(f=>{
+        if(fileContentTs(f) > 0 && !haveBody.has("file-content:"+f.id)){ f.contentTs = 0; filesFixed = true; }
+      });
+    }
+    if(filesFixed) await S.setJSON("app:files", files);
     if(reconcileFolderTree()){
       await S.setJSON("app:folders", folders);
       await S.setJSON("app:files", files);
@@ -1614,7 +1636,17 @@
   }
 
   /* ---- per-resource clocks, with fallbacks for pre-split records ---- */
-  function fileContentTs(f){ return (f && (f.contentTs || f.updatedTs)) || 0; }
+  // contentTs 0 is a real reading — "no body here yet" — and is exactly
+  // what a sync publishes for a book whose upload hasn't happened. Treating
+  // it like a missing field and falling back to updatedTs made the cloud
+  // look as if it already had the body, so the upload was never retried
+  // and other devices got a shelf entry they could not open. Only a record
+  // from before the field existed falls back.
+  function fileContentTs(f){
+    if(!f) return 0;
+    if(typeof f.contentTs === "number") return f.contentTs;
+    return f.updatedTs || 0;
+  }
   function inkTsMap(f){
     if(f && f.inkTs && typeof f.inkTs === "object") return f.inkTs;
     const m = {};
@@ -1915,7 +1947,10 @@
   /* ---- per-file payload transfer -------------------------------------- */
   async function pushContentToCloud(uid, f){
     const text = await S.getText("file-content:"+f.id);
-    if(text != null) await writeChunked(uid, "content", f.id, text, { updatedAt: fileContentTs(f) });
+    // returning quietly here counted as an upload, and the cloud then
+    // advertised a body it was never sent
+    if(text == null) throw new Error("이 기기에 본문 없음");
+    await writeChunked(uid, "content", f.id, text, { updatedAt: fileContentTs(f) });
     // images live in their own IndexedDB entry and used to be left out of
     // sync entirely, so every illustrated book arrived on the second device
     // with its pictures broken
@@ -1926,7 +1961,11 @@
   }
   async function pullContentFromCloud(uid, f){
     const got = await readChunked(uid, "content", f.id);
-    if(!got || got.text == null) throw new Error("본문 없음");
+    if(!got || got.text == null){
+      const err = new Error("클라우드에 본문 없음");
+      err.cloudMissing = true;
+      throw err;
+    }
     await S.setText("file-content:"+f.id, got.text);
     // a file may legitimately have no images, so a missing assets doc is
     // not a failure
@@ -2126,7 +2165,13 @@
           await pullContentFromCloud(uid, job.rec);
           job.rec.contentTs = job.ts;
           if(job.rec.id === openFileId) openContentChanged = true;
-        }catch(e){ failures++; firstFailure = firstFailure || e; console.warn("content pull failed", job.rec.id, e); }
+        }catch(e){
+          // The library said the cloud had this body and it doesn't — left
+          // by the clock bug in fileContentTs. Say so in what we publish:
+          // 0 is what makes the device that does hold it upload it again.
+          if(e && e.cloudMissing) cloudContentTs[job.rec.id] = 0;
+          failures++; firstFailure = firstFailure || e; console.warn("content pull failed", job.rec.id, e);
+        }
       }
       for(const job of pushContent){
         try{
