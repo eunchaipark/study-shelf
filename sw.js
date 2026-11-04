@@ -1,9 +1,15 @@
 // 서재 — app-shell service worker.
 // Precaches the shell (HTML/CSS-in-HTML/JS/icons/vendor lib) so the reader still
 // opens offline; book content itself lives in IndexedDB, not here.
-const SHELL_CACHE = "seojae-shell-v67";
-const RUNTIME_CACHE = "seojae-runtime-v67";
-const CURRENT_CACHES = [SHELL_CACHE, RUNTIME_CACHE];
+const SHELL_CACHE = "seojae-shell-v68";
+const RUNTIME_CACHE = "seojae-runtime-v68";
+// The Firebase SDK is fetched from a versioned URL, so a copy never goes
+// stale — but it lived in the runtime cache, which every deploy deletes.
+// The first offline launch after an update then had no SDK, and sync stayed
+// dead for the rest of that session. It keeps its own cache now, one that
+// outlives deploys.
+const SDK_CACHE = "seojae-sdk";
+const CURRENT_CACHES = [SHELL_CACHE, RUNTIME_CACHE, SDK_CACHE];
 
 const SHELL_URLS = [
   "./",
@@ -81,12 +87,29 @@ self.addEventListener("install", (event) => {
   );
 });
 
+// SDK files an older version kept in its runtime cache move across before
+// that cache goes, so this update isn't the one that strands them.
+async function keepSdkCopies(oldNames) {
+  const sdk = await caches.open(SDK_CACHE);
+  for (const name of oldNames) {
+    if (!name.startsWith("seojae-runtime-")) continue;
+    const old = await caches.open(name);
+    for (const req of await old.keys()) {
+      if (!isFirebaseSdkRequest(new URL(req.url)) || (await sdk.match(req))) continue;
+      const res = await old.match(req);
+      if (res) await sdk.put(req, res);
+    }
+  }
+}
+
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
-      .then((names) => Promise.all(
-        names.filter((n) => !CURRENT_CACHES.includes(n)).map((n) => caches.delete(n))
-      ))
+      .then(async (names) => {
+        const stale = names.filter((n) => !CURRENT_CACHES.includes(n));
+        try { await keepSdkCopies(stale); } catch (e) {}
+        await Promise.all(stale.map((n) => caches.delete(n)));
+      })
       .then(() => self.clients.claim())
   );
 });
@@ -104,8 +127,8 @@ function isFirebaseSdkRequest(url) {
 }
 
 // Stale-while-revalidate: serve cached copy instantly, refresh in the background.
-async function handleRuntimeCacheRequest(request) {
-  const cache = await caches.open(RUNTIME_CACHE);
+async function handleRuntimeCacheRequest(request, cacheName) {
+  const cache = await caches.open(cacheName || RUNTIME_CACHE);
   const cached = await cache.match(request);
   const network = fetch(request)
     .then((res) => { if (res && res.ok) cache.put(request, res.clone()); return res; })
@@ -181,7 +204,11 @@ self.addEventListener("fetch", (event) => {
     if (isAppShellNavigation(url)) event.respondWith(handleNavigation(request));
     return;
   }
-  if (isGoogleFontRequest(url) || isFirebaseSdkRequest(url)) {
+  if (isFirebaseSdkRequest(url)) {
+    event.respondWith(handleRuntimeCacheRequest(request, SDK_CACHE));
+    return;
+  }
+  if (isGoogleFontRequest(url)) {
     event.respondWith(handleRuntimeCacheRequest(request));
     return;
   }

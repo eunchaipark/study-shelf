@@ -1297,22 +1297,22 @@
       req.onerror = ()=> reject(req.error);
     }));
   }
-  function idbSet(key, value){
+  // A full disk can fail a write only when it commits, which arrives as an
+  // abort and nothing else. Listening for errors alone left that promise
+  // pending for good: a sync stuck "in progress" for the rest of the
+  // session, and every later sync queued up behind it.
+  function idbWrite(op){
     return openDB().then(db => new Promise((resolve, reject)=>{
       const tx = db.transaction(STORE, "readwrite");
-      tx.objectStore(STORE).put(value, key);
+      const req = op(tx.objectStore(STORE));
       tx.oncomplete = ()=> resolve();
-      tx.onerror = ()=> reject(tx.error);
+      // the request carries the cause; the transaction's is still empty here
+      tx.onerror = ()=> reject((req && req.error) || tx.error);
+      tx.onabort = ()=> reject(tx.error || (req && req.error) || new DOMException("transaction aborted", "AbortError"));
     }));
   }
-  function idbDel(key){
-    return openDB().then(db => new Promise((resolve, reject)=>{
-      const tx = db.transaction(STORE, "readwrite");
-      tx.objectStore(STORE).delete(key);
-      tx.oncomplete = ()=> resolve();
-      tx.onerror = ()=> reject(tx.error);
-    }));
-  }
+  function idbSet(key, value){ return idbWrite(store => store.put(value, key)); }
+  function idbDel(key){ return idbWrite(store => store.delete(key)); }
   function idbKeys(prefix){
     return openDB().then(db => new Promise((resolve, reject)=>{
       const range = prefix ? IDBKeyRange.bound(prefix, prefix + "￿") : undefined;
@@ -1410,6 +1410,8 @@
   async function loadLibrary(){
     folders = await S.getJSON("app:folders", []);
     files = await S.getJSON("app:files", []);
+    const tombs = await S.getJSON("app:pendingTombs", null);
+    pendingTombs = { ids: (tombs && tombs.ids) || {}, folders: (tombs && tombs.folders) || {} };
     // a library saved in a broken shape must not be able to hang the app on
     // every subsequent launch
     // titles saved before they were being cleaned still carry the markup
@@ -1472,11 +1474,12 @@
      Firestore caps one document at 1 MiB, and book text, pasted images and
      ink strokes each exceed that on their own.
 
-     Merge rules. A file carries three independent clocks so one kind of
-     change can never roll back another:
+     Merge rules. A file carries independent clocks so one kind of change
+     can never roll back another:
        updatedTs  - title/folder/progress; bumped by merely reading a book
        contentTs  - the markdown body and its images; bumped only on save
        inkTs[idx] - handwriting, per chapter
+       hlTs[idx]  - text highlights, per chapter
      Deletions are tombstones holding the record's *own* timestamp as of the
      deletion, so resolving one never depends on two devices' clocks
      agreeing. */
@@ -1500,17 +1503,43 @@
   let syncState = "";          // "" | syncing | synced | error | offline
   let syncErrorMsg = null;
   let lastPublishedAt = 0;     // updatedAt of the library doc *we* last wrote
+  let seenCloudAt = 0;         // updatedAt of the library version the last sync read or wrote
+  const remoteAtsDuringSync = new Set();  // versions the listener reported while a sync ran
   let unsubLibrary = null;
   // Bumped on every local library mutation. syncNow snapshots it before its
   // first await and re-checks after, so a file added mid-sync can't be lost
   // to a merged snapshot that was computed before it existed.
   let libraryRev = 0;
   function bumpLibraryRev(){ libraryRev++; }
-  // Ids whose tombstone is still being written. A sync that read the cloud
-  // before that write landed would otherwise see the record still present
-  // there and pull the just-deleted book straight back.
-  const pendingDeletes = new Set();
-  const pendingFolderDeletes = new Set();
+  /* Deletes the cloud hasn't recorded yet:
+       { ids: { fileId: { ts, at, ink:[idx], hl:[idx] } }, folders: { folderId: { ts, at } } }
+     Kept in IndexedDB until a sync has written them. They used to live
+     only in memory and be written on the side, best effort, after every
+     one of the book's documents had been deleted — so a delete made
+     offline, signed out, or just before the app closed never reached the
+     cloud, and the book came back. Even online, the library was published
+     without the book seconds before the reason it was gone, and the other
+     device took the absence for a book it had to upload again. A sync now
+     writes these before it publishes the library. */
+  let pendingTombs = { ids: {}, folders: {} };
+  async function persistTombs(){ await S.setJSON("app:pendingTombs", pendingTombs); }
+  // the newest change to a record that a delete has to outrank: the record
+  // itself, its text, its ink or its highlights (ink and highlight saves
+  // don't touch updatedTs, so they were ignored, and a book marked up on
+  // one device after being deleted on the other vanished with its marks)
+  function lastEditTs(f){
+    let t = Math.max(f.updatedTs || 0, typeof f.contentTs === "number" ? f.contentTs : 0);
+    for(const v of Object.values(inkTsMap(f))) if(v > t) t = v;
+    for(const v of Object.values(hlTsMap(f))) if(v > t) t = v;
+    return t;
+  }
+  function tombFor(f){
+    return {
+      ts: lastEditTs(f) || Date.now(), at: Date.now(), v: 2,
+      ink: [...new Set([...(f.inkChapters || []), ...Object.keys(inkTsMap(f)).map(Number)])],
+      hl: Object.keys(hlTsMap(f)).map(Number),
+    };
+  }
   // id -> { claim, at }: a body the library said the cloud had, which this
   // session found missing and has already published as missing. The same
   // claim isn't contradicted again until the recheck window passes.
@@ -1659,6 +1688,30 @@
   function librarySig(folders, files){
     return stableStr({ folders: folders.slice().sort(byId), files: files.slice().sort(byId) });
   }
+  // Which chapters hold marks is each device's account of itself, so two
+  // devices whose lists differ are not disagreeing about the library — and
+  // counting it, they would rewrite the document at each other forever.
+  const DEVICE_FIELDS = ["inkChapters", "hlChapters"];
+  function publishedSig(folders, files){
+    return librarySig(folders, files.map(f=>{
+      const o = Object.assign({}, f);
+      for(const k of DEVICE_FIELDS) delete o[k];
+      return o;
+    }));
+  }
+  // A safety net under all of the above. Two clients that disagree about
+  // anything rewrite the library whenever the other does, and every write
+  // wakes the other's listener — a loop that would spend the day's write
+  // quota in hours (a phone still running an older version, left open in
+  // the background, is enough). Past a burst of writes in a minute,
+  // publishing waits.
+  const publishTimes = [];
+  const PUBLISH_BURST = 8;
+  function publishAllowed(){
+    const now = Date.now();
+    while(publishTimes.length && now - publishTimes[0] > 60000) publishTimes.shift();
+    return publishTimes.length < PUBLISH_BURST;
+  }
 
   /* ---- per-resource clocks, with fallbacks for pre-split records ---- */
   // contentTs 0 is a real reading — "no body here yet" — and is exactly
@@ -1682,10 +1735,18 @@
   // "has this been edited since it was deleted?" compares two readings of
   // one record's clock rather than two devices' wall clocks. Legacy
   // tombstones held a bare Date.now(), which this still reads correctly.
+  function tombTs(tomb){ return tomb == null ? 0 : (typeof tomb === "number" ? tomb : (tomb.ts || 0)); }
   function tombstoned(tomb, recTs){
     if(tomb == null) return false;
-    const ts = typeof tomb === "number" ? tomb : (tomb.ts || 0);
-    return (recTs || 0) <= ts;
+    return (recTs || 0) <= tombTs(tomb);
+  }
+  // A file's tombstone outranks it unless the book was edited after it
+  // was deleted — its text, title, ink or highlights. Tombstones from
+  // before ink and highlights counted (no v) hold only updatedTs, and are
+  // read the way they were written.
+  function fileTombstoned(tomb, rec){
+    if(tomb == null) return false;
+    return tombstoned(tomb, tomb.v === 2 ? lastEditTs(rec) : (rec.updatedTs || 0));
   }
 
   // Firebase's own auth state takes a moment to load/restore on every fresh
@@ -1711,6 +1772,23 @@
   // during that gap, exactly the bug this whole cache was meant to avoid.
   let authResolved = false;
   let firebaseLoadingPromise = null;
+
+  // The shelf on this device belongs to the account it last synced with.
+  // Signing in as someone else merged the two libraries and uploaded each
+  // into the other, with no way to separate them again — so that now takes
+  // a yes first.
+  function claimLibraryFor(user){
+    let owner = null;
+    try{ owner = localStorage.getItem("libraryOwner"); }catch(e){}
+    if(owner && owner !== user.uid && (files.length || folders.length)){
+      const ok = confirm("이 기기의 서재는 다른 Google 계정과 동기화되던 서재예요.\n" +
+        (user.email || "이 계정") + "의 서재와 합칠까요?\n\n취소하면 로그아웃돼요.");
+      if(!ok) return false;
+    }
+    try{ localStorage.setItem("libraryOwner", user.uid); }catch(e){}
+    if(owner !== user.uid){ unbackedClaims.clear(); lastChunkCount.clear(); cloudAssetsSig.clear(); }
+    return true;
+  }
   async function ensureFirebase(){
     if(fb) return fb;
     if(firebaseLoadingPromise) return firebaseLoadingPromise;
@@ -1729,6 +1807,7 @@
           await authMod.setPersistence(auth, authMod.browserLocalPersistence);
         }catch(e){ authDebug("지속성 설정 실패: "+e); }
         authMod.onAuthStateChanged(auth, (user)=>{
+          if(user && !claimLibraryFor(user)){ authMod.signOut(auth); return; }   // runs again, signed out
           fb.currentUser = user;
           authResolved = true;
           cacheAuthUser(user);
@@ -1739,6 +1818,8 @@
         return fb;
       }catch(e){
         authDebug("Firebase 로드 자체 실패: "+e);
+        // not remembered: the next sign-in tap or reconnect tries again
+        firebaseLoadingPromise = null;
         return null;
       }
     })();
@@ -1766,7 +1847,7 @@
       s.src = "https://accounts.google.com/gsi/client";
       s.async = true;
       s.onload = ()=> resolve();
-      s.onerror = ()=> reject(new Error("GIS 스크립트 로드 실패"));
+      s.onerror = ()=>{ gisLoadingPromise = null; s.remove(); reject(new Error("GIS 스크립트 로드 실패")); };
       document.head.appendChild(s);
     });
     return gisLoadingPromise;
@@ -1961,6 +2042,12 @@
         if(snap.metadata.hasPendingWrites) return;
         const at = (snap.data() || {}).updatedAt || 0;
         if(at && at === lastPublishedAt) return;
+        // A version arriving mid-sync is left for that sync to judge when it
+        // ends. Scheduled straight away, the first snapshot after sign-in,
+        // which is the very version that sync was reading, ran the whole
+        // sync a second time on every launch.
+        if(syncInFlight){ remoteAtsDuringSync.add(at); return; }
+        if(at && at === seenCloudAt) return;
         scheduleSync(400);
       }, (e)=> authDebug("실시간 구독 오류: "+e));
     }catch(e){ authDebug("실시간 구독 실패: "+e); }
@@ -1970,6 +2057,19 @@
   }
 
   /* ---- per-file payload transfer -------------------------------------- */
+  // A book's pictures, summed up: names, sizes and the tail of each data
+  // URL, hashed. Enough to tell whether they need sending again.
+  function assetsSig(assets){
+    const keys = assets ? Object.keys(assets).sort() : [];
+    if(!keys.length) return "";
+    const s = keys.map(k=> k + ":" + String(assets[k]).length + ":" + String(assets[k]).slice(-24)).join("|");
+    let h = 0x811c9dc5;
+    for(let i = 0; i < s.length; i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+    return (h >>> 0).toString(36) + "." + keys.length;
+  }
+  // id -> the signature of the pictures the cloud is known to hold
+  const cloudAssetsSig = new Map();
+
   // The body is labelled with the version the sync decided to send (ts),
   // not whatever the record says by the time the write happens: an edit
   // saved mid-upload would otherwise stamp its new version on the old text.
@@ -1978,46 +2078,66 @@
     // returning quietly here counted as an upload, and the cloud then
     // advertised a body it was never sent
     if(text == null) throw new Error("이 기기에 본문 없음");
-    await writeChunked(uid, "content", f.id, text, { updatedAt: ts });
-    // images live in their own IndexedDB entry and used to be left out of
-    // sync entirely, so every illustrated book arrived on the second device
-    // with its pictures broken
+    // Images live in their own IndexedDB entry. They go up only when they
+    // changed: fixing one typo used to send every picture in the book again,
+    // and the other device then downloaded them all over again. They go
+    // first, so a body that names them never arrives ahead of them.
     const assets = await S.getJSON("assets:"+f.id, null);
-    if(assets && Object.keys(assets).length){
-      await writeChunked(uid, "assets", f.id, JSON.stringify(assets), { updatedAt: ts });
+    const sig = assetsSig(assets);
+    if(cloudAssetsSig.get(f.id) !== sig){
+      if(sig) await writeChunked(uid, "assets", f.id, JSON.stringify(assets), { updatedAt: ts, sig });
+      else await deleteChunked(uid, "assets", f.id);
+      cloudAssetsSig.set(f.id, sig);
     }
+    await writeChunked(uid, "content", f.id, text, { updatedAt: ts, assetsSig: sig });
   }
   // The library record only *claims* a version; the content document says
   // which one it really holds. Going by the claim is how a missing body
   // looked present, and how an older body could arrive wearing a newer
-  // version's timestamp. Returns { ver } — the version actually received —
-  // or { ver, stale } when what the cloud really has is no newer than
-  // ours, in which case ours is kept and nothing is written.
+  // version's timestamp. Returns { ver, text } — the version actually
+  // received — or { ver, stale } when what the cloud really has is no
+  // newer than ours, or { ver, superseded } when the book was edited or
+  // deleted here while the download ran. Nothing is written in either case.
   async function pullContentFromCloud(uid, f, localTs){
     const got = await readChunked(uid, "content", f.id);
     if(!got || got.text == null) throw cloudMissing("클라우드에 본문 없음");
     const ver = typeof got.meta.updatedAt === "number" ? got.meta.updatedAt : null;
     if(ver != null && ver <= localTs) return { ver, stale: true };
-    await S.put("file-content:"+f.id, got.text);
-    // a file may legitimately have no images, so a missing assets doc is
-    // not a failure
-    const gotAssets = await readChunked(uid, "assets", f.id);
-    if(gotAssets && gotAssets.text != null){
-      let parsed = null;
-      try{ parsed = JSON.parse(gotAssets.text); }catch(e){}
-      if(parsed) await S.put("assets:"+f.id, parsed);
+    // pictures only when the body says they differ from ours; a body from
+    // before signatures says nothing, so they are read as they always were
+    const sig = typeof got.meta.assetsSig === "string" ? got.meta.assetsSig : null;
+    let assets;   // undefined: keep ours · null: the book has none · object: take these
+    if(sig === null || sig !== assetsSig(await S.getJSON("assets:"+f.id, null))){
+      if(sig === "") assets = null;
+      else {
+        // a file may legitimately have no images, so a missing assets doc
+        // is not a failure
+        const gotAssets = await readChunked(uid, "assets", f.id);
+        if(gotAssets && gotAssets.text != null){ try{ assets = JSON.parse(gotAssets.text); }catch(e){} }
+      }
     }
-    return { ver };
+    // checked after the network, right before writing: a save made here in
+    // the meantime is newer than what arrived, and a deleted book stays so
+    if(!files.includes(f) || fileContentTs(f) !== localTs) return { ver, superseded: true };
+    await S.put("file-content:"+f.id, got.text);
+    if(assets === null) await S.del("assets:"+f.id);
+    else if(assets) await S.put("assets:"+f.id, assets);
+    if(sig !== null) cloudAssetsSig.set(f.id, sig);
+    return { ver, text: got.text };
   }
   async function pushHlToCloud(uid, f, idx, ts){
     const hl = await S.getJSON("hl:"+f.id+":"+idx, []);
     await writeChunked(uid, "hl", f.id+"_"+idx, JSON.stringify(hl || []), { updatedAt: ts });
   }
-  async function pullHlFromCloud(uid, f, idx){
+  // Both mark pulls return null, writing nothing, when the chapter was
+  // marked here (or the book deleted) while the download ran: those marks
+  // are newer, and the next pass sends them.
+  async function pullHlFromCloud(uid, f, idx, localTs){
     const got = await readChunked(uid, "hl", f.id+"_"+idx);
     if(!got || got.text == null) throw cloudMissing("클라우드에 하이라이트 없음");
     let list = [];
     try{ list = JSON.parse(got.text) || []; }catch(e){ list = []; }
+    if(!files.includes(f) || (hlTsMap(f)[idx] || 0) !== localTs) return null;
     await S.put("hl:"+f.id+":"+idx, list);
     return list.length;
   }
@@ -2025,10 +2145,11 @@
     const strokes = await S.getJSON("ink:"+f.id+":"+idx, []);
     await writeChunked(uid, "ink", f.id+"_"+idx, encodeStrokes(strokes), { updatedAt: ts });
   }
-  async function pullInkFromCloud(uid, f, idx){
+  async function pullInkFromCloud(uid, f, idx, localTs){
     const got = await readChunked(uid, "ink", f.id+"_"+idx);
     if(!got || got.text == null) throw cloudMissing("클라우드에 필기 없음");
     const strokes = decodeStrokes(got.text);
+    if(!files.includes(f) || (inkTsMap(f)[idx] || 0) !== localTs) return null;
     await S.put("ink:"+f.id+":"+idx, strokes);
     return strokes.length;
   }
@@ -2047,35 +2168,14 @@
     if(signedIn) syncNow();
   }
 
-  async function deleteFileFromCloud(uid, f){
-    const { doc, getDoc, setDoc } = fb.fsMod;
-    try{
-      await deleteChunked(uid, "content", f.id);
-      await deleteChunked(uid, "assets", f.id);
-      const chapters = new Set([...(f.inkChapters||[]), ...Object.keys(inkTsMap(f)).map(Number)]);
-      for(const idx of chapters) await deleteChunked(uid, "ink", f.id+"_"+idx);
-      for(const idx of Object.keys(hlTsMap(f))) await deleteChunked(uid, "hl", f.id+"_"+idx);
-      const delRef = doc(fb.db, "users", uid, "library", "deleted");
-      const snap = await getDoc(delRef);
-      const data = snap.exists() ? snap.data() : {};
-      const ids = data.ids || {};
-      ids[f.id] = { ts: f.updatedTs || Date.now(), at: Date.now() };
-      await setDoc(delRef, Object.assign({}, data, { ids }));
-    }catch(e){ console.warn("cloud delete failed", e); }
-  }
-  // Folders used to merge as a plain union, so a folder deleted on one
-  // device came straight back from the other, and a rename never travelled
-  // at all. They now carry updatedTs and their own tombstones.
-  async function deleteFoldersFromCloud(uid, deleted){
-    const { doc, getDoc, setDoc } = fb.fsMod;
-    try{
-      const delRef = doc(fb.db, "users", uid, "library", "deleted");
-      const snap = await getDoc(delRef);
-      const data = snap.exists() ? snap.data() : {};
-      const folderTombs = data.folders || {};
-      for(const fo of deleted) folderTombs[fo.id] = { ts: fo.updatedTs || Date.now(), at: Date.now() };
-      await setDoc(delRef, Object.assign({}, data, { folders: folderTombs }));
-    }catch(e){ console.warn("cloud folder delete failed", e); }
+  // The book's documents go after its tombstone is in place: by then no
+  // device will try to fetch them, so a delete that stops half-way leaves
+  // only unread leftovers rather than a book that can't be opened.
+  async function deleteCloudPayloads(uid, id, tomb){
+    await deleteChunked(uid, "content", id);
+    await deleteChunked(uid, "assets", id);
+    for(const idx of (tomb.ink || [])) await deleteChunked(uid, "ink", id+"_"+idx);
+    for(const idx of (tomb.hl || [])) await deleteChunked(uid, "hl", id+"_"+idx);
   }
 
   /* ---- the sync itself ------------------------------------------------- */
@@ -2084,28 +2184,40 @@
     if(syncInFlight){ syncQueued = true; return; }
     if(!navigator.onLine){ setSyncStatus("offline"); return; }
     syncInFlight = true;
+    remoteAtsDuringSync.clear();
     clearTimeout(syncRetryTimer);
     setSyncStatus("syncing");
     const uid = fb.currentUser.uid;
     const openFileId = activeFile ? activeFile.id : null;
     let openContentChanged = false;
+    let openMarksChanged = false;
     let failures = 0;
     let firstFailure = null;
+    const revAtStart = libraryRev;
+    let readAt = 0;
+    let publishHeldBack = false;
+    const fail = (e, what, ...where)=>{ failures++; firstFailure = firstFailure || e; console.warn(what, ...where, e); };
     try{
       const { doc, getDoc, setDoc } = fb.fsMod;
-      const revAtStart = libraryRev;
       const libRef = doc(fb.db, "users", uid, "library", "main");
+      const delRef = doc(fb.db, "users", uid, "library", "deleted");
+      const prefsRef = doc(fb.db, "users", uid, "prefs", "main");
+      // what this device holds before the merge touches it, so a pass that
+      // changes nothing here can skip rewriting and redrawing the shelf
+      const localSigBefore = librarySig(folders, files);
 
-      const [libSnap, delSnap] = await Promise.all([
-        getDoc(libRef),
-        getDoc(doc(fb.db, "users", uid, "library", "deleted")),
-      ]);
+      const [libSnap, delSnap, prefsSnap] = await Promise.all([ getDoc(libRef), getDoc(delRef), getDoc(prefsRef) ]);
       const cloud = libSnap.exists() ? libSnap.data() : {};
+      readAt = cloud.updatedAt || 0;
+      seenCloudAt = readAt;
       const cloudFiles = cloud.files || [];
       const cloudFolders = cloud.folders || [];
       const delData = delSnap.exists() ? delSnap.data() : {};
-      const fileTombs = delData.ids || {};
-      const folderTombs = delData.folders || {};
+      // this device's own deletes count before the cloud has heard of them
+      const fileTombs = Object.assign({}, delData.ids || {});
+      const folderTombs = Object.assign({}, delData.folders || {});
+      for(const [id, t] of Object.entries(pendingTombs.ids)) if(tombTs(fileTombs[id]) < t.ts) fileTombs[id] = t;
+      for(const [id, t] of Object.entries(pendingTombs.folders)) if(tombTs(folderTombs[id]) < t.ts) folderTombs[id] = t;
 
       // ---- folders: newer updatedTs wins, tombstones suppress ----
       const folderMap = new Map();
@@ -2116,7 +2228,7 @@
         else if((c.updatedTs||0) > (l.updatedTs||0)) Object.assign(l, c); // in place: keeps references live
       });
       const mergedFolders = Array.from(folderMap.values())
-        .filter(fo=> !pendingFolderDeletes.has(fo.id) && !tombstoned(folderTombs[fo.id], fo.updatedTs||0));
+        .filter(fo=> !tombstoned(folderTombs[fo.id], fo.updatedTs||0));
 
       // ---- files ----
       const localById = new Map(files.map(f=>[f.id, f]));
@@ -2132,12 +2244,16 @@
 
       for(const id of allIds){
         const l = localById.get(id), c = cloudById.get(id);
-        // read every clock off both sides *before* merging, since merging
-        // overwrites the local record's fields in place
+        // Every clock is read off both sides *before* merging: the merge
+        // overwrites the local record's fields in place. The highlight
+        // clocks used to be read after it, so whenever the other device's
+        // record was the newer one, both sides looked equal and highlights
+        // simply never moved in either direction.
         const lContent = l ? fileContentTs(l) : 0;
         const cContent = c ? fileContentTs(c) : 0;
-        const lInk = l ? inkTsMap(l) : {};
-        const cInk = c ? inkTsMap(c) : {};
+        const lInk = l ? inkTsMap(l) : {}, cInk = c ? inkTsMap(c) : {};
+        const lHl = l ? hlTsMap(l) : {}, cHl = c ? hlTsMap(c) : {};
+        const lInkCh = l ? l.inkChapters : undefined, lHlCh = l ? l.hlChapters : undefined;
 
         // Merge into the existing local object whenever there is one, so a
         // book open in the reader (activeFile) keeps pointing at a record
@@ -2147,40 +2263,40 @@
         let rec;
         if(l && c){
           if((c.updatedTs||0) > (l.updatedTs||0)) Object.assign(l, c);
+          // which chapters hold marks *here* is this device's to say; the
+          // pulls below add to it as marks arrive
+          if(lInkCh === undefined) delete l.inkChapters; else l.inkChapters = lInkCh;
+          if(lHlCh === undefined) delete l.hlChapters; else l.hlChapters = lHlCh;
           rec = l;
-        } else rec = l || Object.assign({}, c);
+        } else if(l) rec = l;
+        else { rec = Object.assign({}, c); rec.inkChapters = []; rec.hlChapters = []; }
 
-        if(pendingDeletes.has(id)) continue; // local copy is already gone
-        if(tombstoned(fileTombs[id], rec.updatedTs||0)){ purged.push(rec); continue; }
+        if(fileTombstoned(fileTombs[id], rec)){ if(l) purged.push(rec); continue; }
 
         // content and ink each resolve on their own clock, so reading a
-        // book on one device (which bumps updatedTs) cannot roll back an
-        // unsynced edit made on another
+        // book on one device cannot roll back an unsynced edit made on another
         rec.contentTs = lContent;
         if(cContent > lContent) pullContent.push({ rec, ts: cContent });
         else if(lContent > cContent) pushContent.push({ rec, ts: lContent });
         cloudContentTs[id] = cContent;
 
-        const chapters = new Set([...Object.keys(lInk), ...Object.keys(cInk)]);
         const localInk = {}, cloudInk = {};
-        for(const k of chapters){
+        for(const k of new Set([...Object.keys(lInk), ...Object.keys(cInk)])){
           const lt = lInk[k]||0, ct = cInk[k]||0;
           localInk[k] = lt;
           cloudInk[k] = ct;
-          if(ct > lt) pullInk.push({ rec, idx:+k, ts:ct });
+          if(ct > lt) pullInk.push({ rec, idx:+k, ts:ct, lts:lt });
           else if(lt > ct) pushInk.push({ rec, idx:+k, ts:lt });
         }
         rec.inkTs = localInk;
         cloudInkTs[id] = cloudInk;
 
-        const lHl = l ? hlTsMap(l) : {}, cHl = c ? hlTsMap(c) : {};
-        const hlChapters = new Set([...Object.keys(lHl), ...Object.keys(cHl)]);
         const localHl = {}, cloudHl = {};
-        for(const k of hlChapters){
+        for(const k of new Set([...Object.keys(lHl), ...Object.keys(cHl)])){
           const lt = lHl[k]||0, ct = cHl[k]||0;
           localHl[k] = lt;
           cloudHl[k] = ct;
-          if(ct > lt) pullHl.push({ rec, idx:+k, ts:ct });
+          if(ct > lt) pullHl.push({ rec, idx:+k, ts:ct, lts:lt });
           else if(lt > ct) pushHl.push({ rec, idx:+k, ts:lt });
         }
         rec.hlTs = localHl;
@@ -2215,6 +2331,7 @@
         try{
           const got = await pullContentFromCloud(uid, job.rec, localTs);
           unbackedClaims.delete(id);
+          if(got.superseded){ cloudContentTs[id] = got.ver != null ? got.ver : job.ts; continue; }
           if(got.stale){
             // the cloud really holds something no newer than ours: say what
             // it holds, and send ours in this same pass
@@ -2223,8 +2340,13 @@
             continue;
           }
           const ts = got.ver != null ? got.ver : job.ts;
-          job.rec.contentTs = ts;
           cloudContentTs[id] = ts;
+          // a save landing during the write above is the newer of the two
+          if(fileContentTs(job.rec) !== localTs) continue;
+          job.rec.contentTs = ts;
+          // the chapter count belongs to the body that was kept, whichever
+          // device's record the rest of the fields came from
+          job.rec.chapterCount = chapterChunks(got.text, job.rec.title).length;
           if(id === openFileId) openContentChanged = true;
         }catch(e){
           if(e && e.cloudMissing){
@@ -2242,7 +2364,7 @@
               cloudContentTs[id] = 0;
             }
           }
-          failures++; firstFailure = firstFailure || e; console.warn("content pull failed", id, e);
+          fail(e, "content pull failed", id);
         }
       }
       for(const job of pushContent){
@@ -2252,44 +2374,83 @@
         }catch(e){
           // deleted while its upload was waiting: nothing went wrong
           if(!files.some(x=> x.id === job.rec.id)) continue;
-          failures++; firstFailure = firstFailure || e; console.warn("content push failed", job.rec.id, e);
+          fail(e, "content push failed", job.rec.id);
         }
       }
+      // a pull for the chapter on screen has to reach the reader too
+      const onScreen = (job)=> activeFile && job.rec.id === activeFile.id && job.idx === chapterIdx;
       for(const job of pullInk){
         try{
-          const n = await pullInkFromCloud(uid, job.rec, job.idx);
+          const n = await pullInkFromCloud(uid, job.rec, job.idx, job.lts);
+          if(n === null || (job.rec.inkTs[job.idx] || 0) !== job.lts) continue;   // drawn on here meanwhile
           job.rec.inkTs[job.idx] = job.ts;
           const set = new Set(job.rec.inkChapters || []);
           if(n > 0) set.add(job.idx); else set.delete(job.idx);
           job.rec.inkChapters = Array.from(set).sort((a,b)=>a-b);
+          if(onScreen(job)) openMarksChanged = true;
         }catch(e){
           if(e && e.cloudMissing && cloudInkTs[job.rec.id]) cloudInkTs[job.rec.id][job.idx] = 0;
-          failures++; firstFailure = firstFailure || e; console.warn("ink pull failed", job.rec.id, job.idx, e);
+          fail(e, "ink pull failed", job.rec.id, job.idx);
         }
       }
       for(const job of pushInk){
         try{
           await pushInkToCloud(uid, job.rec, job.idx, job.ts);
           if(cloudInkTs[job.rec.id]) cloudInkTs[job.rec.id][job.idx] = job.ts;
-        }catch(e){ failures++; firstFailure = firstFailure || e; console.warn("ink push failed", job.rec.id, job.idx, e); }
+        }catch(e){ if(files.includes(job.rec)) fail(e, "ink push failed", job.rec.id, job.idx); }
       }
       for(const job of pullHl){
         try{
-          const n = await pullHlFromCloud(uid, job.rec, job.idx);
+          const n = await pullHlFromCloud(uid, job.rec, job.idx, job.lts);
+          if(n === null || (job.rec.hlTs[job.idx] || 0) !== job.lts) continue;    // marked here meanwhile
           job.rec.hlTs[job.idx] = job.ts;
           const set = new Set(job.rec.hlChapters || []);
           if(n > 0) set.add(job.idx); else set.delete(job.idx);
           job.rec.hlChapters = Array.from(set).sort((a,b)=>a-b);
+          if(onScreen(job)) openMarksChanged = true;
         }catch(e){
           if(e && e.cloudMissing && cloudHlTs[job.rec.id]) cloudHlTs[job.rec.id][job.idx] = 0;
-          failures++; firstFailure = firstFailure || e; console.warn("highlight pull failed", job.rec.id, job.idx, e);
+          fail(e, "highlight pull failed", job.rec.id, job.idx);
         }
       }
       for(const job of pushHl){
         try{
           await pushHlToCloud(uid, job.rec, job.idx, job.ts);
           if(cloudHlTs[job.rec.id]) cloudHlTs[job.rec.id][job.idx] = job.ts;
-        }catch(e){ failures++; firstFailure = firstFailure || e; console.warn("highlight push failed", job.rec.id, job.idx, e); }
+        }catch(e){ if(files.includes(job.rec)) fail(e, "highlight push failed", job.rec.id, job.idx); }
+      }
+
+      // ---- this device's deletes, told to the cloud ----
+      // Written before the library: a device that reads the library without
+      // a book must also be able to read why it is gone, or it takes the
+      // absence for a book of its own to upload again.
+      const tombIds = Object.keys(pendingTombs.ids), tombFolderIds = Object.keys(pendingTombs.folders);
+      if(tombIds.length || tombFolderIds.length){
+        const liveIds = new Set(files.map(f=> f.id)), liveFolders = new Set(folders.map(fo=> fo.id));
+        const patch = {}, flushed = [];
+        for(const id of tombIds){
+          const t = pendingTombs.ids[id];
+          // edited on another device since it was deleted here: it stays
+          if(liveIds.has(id)){ delete pendingTombs.ids[id]; continue; }
+          (patch.ids = patch.ids || {})[id] = { ts: Math.max(t.ts, tombTs(delData.ids && delData.ids[id])), at: t.at, v: 2 };
+          flushed.push(id);
+        }
+        for(const id of tombFolderIds){
+          const t = pendingTombs.folders[id];
+          if(liveFolders.has(id)){ delete pendingTombs.folders[id]; continue; }
+          (patch.folders = patch.folders || {})[id] = { ts: Math.max(t.ts, tombTs(delData.folders && delData.folders[id])), at: t.at };
+        }
+        try{
+          // merged on the server, entry by entry: two devices deleting at
+          // the same time used to each overwrite the other's whole list
+          if(patch.ids || patch.folders) await setDoc(delRef, patch, { merge: true });
+          for(const id of Object.keys(patch.folders || {})) delete pendingTombs.folders[id];
+          for(const id of flushed){
+            try{ await deleteCloudPayloads(uid, id, pendingTombs.ids[id]); delete pendingTombs.ids[id]; }
+            catch(e){ fail(e, "cloud delete failed", id); }   // the tombstone stands; the leftovers go next time
+          }
+        }catch(e){ fail(e, "tombstone write failed"); }
+        await persistTombs();
       }
 
       // `files` *is* mergedFiles, so anything created while the transfers
@@ -2297,8 +2458,11 @@
       // so a follow-up pass is still owed.
       if(libraryRev !== revAtStart) syncQueued = true;
 
-      await S.setJSON("app:folders", folders);
-      await S.setJSON("app:files", files);
+      const localChanged = libraryRev !== revAtStart || librarySig(folders, files) !== localSigBefore;
+      if(localChanged){
+        await S.setJSON("app:folders", folders);
+        await S.setJSON("app:files", files);
+      }
 
       // The published record advertises what the *cloud* holds, which stays
       // newer than the local copy whenever a pull failed — publishing the
@@ -2306,24 +2470,31 @@
       // back, and the newer body would be lost.
       // A record that joined mid-sync has no cloud-side entry at all, so it
       // publishes 0 and the next pass sees local > cloud and uploads it.
-      const payloadFiles = mergedFiles.map(f=> Object.assign({}, f, {
+      // Built from the live arrays, not the merged snapshot: a book deleted
+      // while this pass ran must not be published back.
+      const payloadFiles = files.map(f=> Object.assign({}, f, {
         contentTs: cloudContentTs[f.id] || 0,
         inkTs: cloudInkTs[f.id] || {},
         hlTs: cloudHlTs[f.id] || {},
       }));
-      const payload = { folders: mergedFolders, files: payloadFiles };
+      const payloadFolders = folders.slice();
 
       // Skip a no-op write. Besides saving quota on the periodic poll, this
       // is what keeps the live listener from ping-ponging: two devices that
       // already agree stop rewriting the document at each other.
-      if(librarySig(mergedFolders, payloadFiles) !== librarySig(cloudFolders, cloudFiles)){
-        lastPublishedAt = Date.now();
-        await setDoc(libRef, Object.assign({}, payload, { updatedAt: lastPublishedAt }));
+      if(publishedSig(payloadFolders, payloadFiles) !== publishedSig(cloudFolders, cloudFiles)){
+        if(publishAllowed()){
+          publishTimes.push(Date.now());
+          lastPublishedAt = Date.now();
+          await setDoc(libRef, { folders: payloadFolders, files: payloadFiles, updatedAt: lastPublishedAt });
+          seenCloudAt = lastPublishedAt;
+        } else {
+          console.warn("library publish held back: too many in a minute");
+          publishHeldBack = true;
+        }
       }
 
       // prefs: last-writer-wins by timestamp
-      const prefsRef = doc(fb.db, "users", uid, "prefs", "main");
-      const prefsSnap = await getDoc(prefsRef);
       const cloudPrefs = prefsSnap.exists() ? prefsSnap.data() : null;
       if(cloudPrefs && (cloudPrefs.updatedTs||0) > prefsUpdatedTs){
         sortMode = cloudPrefs.sortMode || sortMode;
@@ -2356,7 +2527,7 @@
         }
       }
 
-      renderAll();
+      if(localChanged) renderAll();
       lastSyncTs = Date.now();
       // Only a clean pass resets the backoff. Resetting it before every
       // retry kept a failure that won't clear by itself retrying every five
@@ -2365,6 +2536,12 @@
       setSyncStatus(failures ? "error" : "synced",
         failures ? (friendlySyncError(firstFailure) || (failures+"개 항목 실패")) + " (" + failures + "개)" : null);
       if(failures) scheduleRetry();
+
+      // Marks for the chapter on screen arrived: the reader has to show
+      // them, and — more to the point — hold them, since its next stroke or
+      // highlight saves the chapter's whole list and saving the stale one
+      // erased what had just come in.
+      if(openMarksChanged && activeFile && activeFile.id === openFileId) refreshOpenChapterMarks();
 
       // don't yank the page out from under someone mid-paragraph: offer the
       // refresh instead of forcing it
@@ -2377,7 +2554,17 @@
       scheduleRetry();
     }finally{
       syncInFlight = false;
-      if(syncQueued){ syncQueued = false; scheduleSync(600); }
+      // Another pass only for something this one didn't cover: a local
+      // change made while it ran, or a library version it never read. The
+      // focus and visibility events of a single resume used to buy two full
+      // passes back to back.
+      const unseenRemote = [...remoteAtsDuringSync].some(at=> at !== readAt && at !== seenCloudAt && at !== lastPublishedAt);
+      remoteAtsDuringSync.clear();
+      if(syncQueued){
+        syncQueued = false;
+        if(libraryRev !== revAtStart || unseenRemote) scheduleSync(600);
+      } else if(unseenRemote) scheduleSync(600);
+      if(publishHeldBack) scheduleSync(30000);   // the write it skipped, once things calm down
     }
   }
 
@@ -2467,6 +2654,10 @@
 
   /* ---------------- folder tree helpers ---------------- */
   function currentParentId(){ return folderPath.length ? folderPath[folderPath.length-1] : null; }
+  // A new book goes where the user is looking. 전체 and 미분류 leave the
+  // folder trail behind, and filing into it there put the book somewhere
+  // off screen.
+  function newBookFolderId(){ return libView === "browse" ? currentParentId() : null; }
   function folderById(id){ return folders.find(f=>f.id===id); }
   function childFolders(parentId){ return folders.filter(f=>(f.parentId||null)===(parentId||null)); }
 
@@ -2776,6 +2967,8 @@
       navigateOrToggle(e);
     });
     item.addEventListener("keydown", (e)=>{
+      // Enter on the row's own ⋯ button is that button's to handle
+      if(e.target.closest(".tree-kebab-btn")) return;
       if(e.key==="Enter" || e.key===" "){ e.preventDefault(); navigateOrToggle(e); }
     });
     item.querySelector(".tree-kebab-btn").addEventListener("click", (e)=>{
@@ -2878,8 +3071,7 @@
       const pct = typeof prog.pct === "number" ? Math.round(prog.pct*100) : 0;
       const card = document.createElement("div");
       card.className = "file-card";
-      const d = new Date(f.updatedTs);
-      const dateStr = d.toLocaleDateString("ko-KR", {month:"short", day:"numeric"});
+      const dateStr = CARD_DATE.format(new Date(f.updatedTs || 0));
       const fPath = f.folderId ? folderPathLabel(f.folderId) : null;
       card.innerHTML =
         '<div class="doc-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6"/></svg></div>'+
@@ -2912,6 +3104,9 @@
   }
 
   function renderAll(){ invalidateFolderCounts(); invalidateVisible(); renderFolderRail(); renderFileList(); }
+  // one formatter for every card: toLocaleDateString with options builds a
+  // new one per call, which on each keystroke of a search was per card
+  const CARD_DATE = new Intl.DateTimeFormat("ko-KR", {month:"short", day:"numeric"});
 
   /* ---------------- searching inside the books -------------------------
      Search only ever looked at titles, which is the one thing you already
@@ -2922,7 +3117,7 @@
      dropped the moment that book is edited. The scan itself is cancellable:
      a newer query abandons the one in flight rather than racing it to the
      render. */
-  const contentCache = new Map();   // id -> { ts, text }
+  const contentCache = new Map();   // id -> { ts, text, lower }
   let contentHits = [];             // [{ file, chapterIdx, chapterTitle, snippet, at }]
   let contentSearchRun = 0;
   let contentSearchTimer = null;
@@ -2930,23 +3125,37 @@
   const CONTENT_HIT_LIMIT = 60;
 
   // One search over a large shelf would otherwise leave every book's text
-  // resident for the rest of the session. Keep the most recently used ones
-  // and let the rest go — a re-read is a single IndexedDB get.
-  const CONTENT_CACHE_MAX = 40;
-  async function contentFor(f){
+  // resident for the rest of the session, so the cache has a budget. Past
+  // it, the books already held stay and the rest are read as needed. It
+  // used to evict the oldest instead, and a search walks the shelf in the
+  // same order every time, so on a big shelf each read pushed out exactly
+  // the book the next query wanted first: every keystroke re-read every book.
+  const CONTENT_CACHE_CHARS = 12000000;   // text plus its lowercase copy
+  let contentCacheChars = 0;
+  function dropCachedContent(id){
+    const hit = contentCache.get(id);
+    if(!hit) return;
+    contentCacheChars -= hit.text.length * 2;
+    contentCache.delete(id);
+  }
+  async function contentEntry(f){
     const ts = fileContentTs(f);
     const hit = contentCache.get(f.id);
-    if(hit && hit.ts === ts){
-      contentCache.delete(f.id);          // re-insert to mark it as recent
-      contentCache.set(f.id, hit);
-      return hit.text;
-    }
+    if(hit && hit.ts === ts) return hit;
+    dropCachedContent(f.id);
     const text = (await S.getText("file-content:"+f.id)) || "";
-    contentCache.set(f.id, { ts, text });
-    while(contentCache.size > CONTENT_CACHE_MAX){
-      contentCache.delete(contentCache.keys().next().value);
+    const entry = { ts, text, lower: null };
+    if(contentCacheChars + text.length * 2 <= CONTENT_CACHE_CHARS){
+      contentCache.set(f.id, entry);
+      contentCacheChars += text.length * 2;
     }
-    return text;
+    return entry;
+  }
+  async function contentFor(f){ return (await contentEntry(f)).text; }
+  // lowercased once per body, not once per query
+  function lowerOf(entry){
+    if(entry.lower === null) entry.lower = entry.text.toLowerCase();
+    return entry.lower;
   }
 
   function plainish(t){
@@ -2977,10 +3186,10 @@
     contentSearchBusy = true;
     const out = [];
     for(const f of files){
-      const text = await contentFor(f);
+      const entry = await contentEntry(f);
       if(run !== contentSearchRun) return;    // superseded by a newer query
-      if(!text.toLowerCase().includes(needle)) continue;
-      const chunks = chapterChunks(text, f.title);
+      if(!lowerOf(entry).includes(needle)) continue;
+      const chunks = chapterChunks(entry.text, f.title);
       for(let ci = 0; ci < chunks.length && out.length < CONTENT_HIT_LIMIT; ci++){
         const at = chunks[ci].text.toLowerCase().indexOf(needle);
         if(at === -1) continue;
@@ -2994,7 +3203,8 @@
     if(run !== contentSearchRun) return;
     contentHits = out;
     contentSearchBusy = false;
-    renderFileList();
+    // the rail's result count includes these, so it is redrawn too
+    renderAll();
   }
 
   function scheduleContentSearch(){
@@ -3216,13 +3426,20 @@
     if(text == null){ toast("본문을 찾을 수 없어요"); return; }
     const assets = await S.getJSON("assets:"+f.id, null);
     let out = text;
-    if(assets){
-      for(const name of Object.keys(assets)){
-        const url = assets[name];
-        // both the bare and the angle-bracketed destination this app writes
-        out = out.split("](<" + name + ">)").join("](" + url + ")");
-        out = out.split("](" + name + ")").join("](" + url + ")");
-      }
+    if(assets && Object.keys(assets).length){
+      // Every way the reader finds a picture — as written, percent-decoded,
+      // or by file name alone — so the export carries each picture the
+      // reader shows. Matching only the exact name left "images/fig.png"
+      // and "Pasted%20image.png" broken in the exported file.
+      const lookup = (dest)=>{
+        const d = dest.replace(/^<([\s\S]*)>$/, "$1");
+        if(/^(https?:|data:)/i.test(d)) return null;
+        let name = d;
+        try{ name = decodeURIComponent(d); }catch(e){}
+        return assets[d] || assets[name] || assets[name.split("/").pop()] || null;
+      };
+      out = out.replace(/(!\[[^\]\n]*\]\()(<[^>\n]*>|[^)\s]+)/g, (m, pre, dest)=>{ const url = lookup(dest); return url ? pre + url : m; });
+      out = out.replace(/(<img\b[^>]*?\bsrc=["'])([^"']+)/gi, (m, pre, src)=>{ const url = lookup(src); return url ? pre + url : m; });
     }
     downloadBlob(safeName(f.title) + ".md", new Blob([out], { type: "text/markdown;charset=utf-8" }));
   }
@@ -3264,6 +3481,28 @@
     }
   }
 
+  // Keeps each backed-up chapter's marks only where they are newer than
+  // this device's. Returns whether anything was taken.
+  async function takeBackupMarks(rec, backupRec, marks){
+    let took = false;
+    for(const m of marks){
+      if(!Array.isArray(m.list) || !Number.isInteger(m.idx) || m.idx < 0) continue;
+      const theirs = (m.kind === "ink" ? inkTsMap(backupRec) : hlTsMap(backupRec))[m.idx] || backupRec.updatedTs || 1;
+      const mineTs = (m.kind === "ink" ? inkTsMap(rec) : hlTsMap(rec))[m.idx] || 0;
+      if(theirs <= mineTs) continue;
+      try{ await S.put(m.kind + ":" + rec.id + ":" + m.idx, m.list); }catch(e){ continue; }
+      const clocks = Object.assign({}, m.kind === "ink" ? inkTsMap(rec) : hlTsMap(rec));
+      clocks[m.idx] = theirs;
+      const field = m.kind + "Chapters";
+      const set = new Set(rec[field] || []);
+      if(m.list.length) set.add(m.idx); else set.delete(m.idx);
+      rec[m.kind + "Ts"] = clocks;
+      rec[field] = [...set].sort((a, b)=> a - b);
+      took = true;
+    }
+    return took;
+  }
+
   // Merges rather than replaces, and never deletes: restoring onto a device
   // that has moved on since should not throw its newer work away.
   async function importBackup(file){
@@ -3276,6 +3515,25 @@
     }
     await libraryReady;
     let added = 0, updated = 0;
+    // A book deleted since the backup was made would be deleted again by
+    // the next sync: its tombstone is newer than anything in the backup.
+    // Restoring it is a decision made now, so it is dated now.
+    let cloudTombs = {};
+    if(fb && fb.currentUser){
+      try{
+        const snap = await fb.fsMod.getDoc(fb.fsMod.doc(fb.db, "users", fb.currentUser.uid, "library", "deleted"));
+        if(snap.exists()) cloudTombs = snap.data().ids || {};
+      }catch(e){}
+    }
+    // ink and highlights from the backup, by book
+    const marksByFile = new Map();
+    for(const kind of ["ink", "hl"]){
+      for(const key of Object.keys(data[kind] || {})){
+        const [fid, idx] = key.split(":");
+        if(!marksByFile.has(fid)) marksByFile.set(fid, []);
+        marksByFile.get(fid).push({ kind, idx: Number(idx), list: data[kind][key] });
+      }
+    }
     const folderById2 = new Map(folders.map(fo=> [fo.id, fo]));
     for(const fo of (data.folders || [])){
       const mine = folderById2.get(fo.id);
@@ -3302,22 +3560,29 @@
         }catch(e){ takeBody = false; } // not stored, so not claimed
       }
       const bodyTs = takeBody ? backupBodyTs : myBodyTs;
-      if(!mine){ files.push(Object.assign({}, f, { contentTs: bodyTs })); added++; }
+      // The clocks say what this device holds, so they are never copied
+      // across with the rest of the record; each follows what is kept.
+      const fields = Object.assign({}, f);
+      for(const k of ["contentTs", "inkTs", "hlTs", "inkChapters", "hlChapters"]) delete fields[k];
+      let rec = mine;
+      if(!mine){
+        rec = Object.assign(fields, { contentTs: bodyTs, inkTs: {}, hlTs: {}, inkChapters: [], hlChapters: [] });
+        if(pendingTombs.ids[f.id]) delete pendingTombs.ids[f.id];
+        const tomb = cloudTombs[f.id];
+        if(tomb && fileTombstoned(tomb, rec)) rec.updatedTs = Math.max(rec.updatedTs || 0, tombTs(tomb) + 1);
+        files.push(rec);
+        added++;
+      }
       else if(incomingNewer || takeBody){
-        if(incomingNewer) Object.assign(mine, f);
+        if(incomingNewer) Object.assign(mine, fields);
         mine.contentTs = bodyTs;
         updated++;
       }
-    }
-    for(const key of Object.keys(data.ink || {})){
-      const [fid, idx] = key.split(":");
-      const target = files.find(f=> f.id === fid);
-      if(target) await S.setJSON("ink:"+fid+":"+idx, data.ink[key]);
-    }
-    for(const key of Object.keys(data.hl || {})){
-      const [fid, idx] = key.split(":");
-      const target = files.find(f=> f.id === fid);
-      if(target) await S.setJSON("hl:"+fid+":"+idx, data.hl[key]);
+      // Ink and highlights go chapter by chapter on their own clocks, as in
+      // sync. They used to be written over whatever was here, newer or not,
+      // while the clocks stayed put — so the newer marks were gone and sync
+      // couldn't even tell anything had changed.
+      if(await takeBackupMarks(rec, f, marksByFile.get(f.id) || []) && mine && !(incomingNewer || takeBody)) updated++;
     }
     if(data.prefs){
       readLine = Number(data.prefs.readLine) || readLine;
@@ -3328,6 +3593,7 @@
       applyReadStyle();
     }
     reconcileFolderTree();
+    await persistTombs();
     await persistFolders();
     await persistFiles();
     renderAll();
@@ -3341,12 +3607,12 @@
   async function collectHighlights(){
     const out = [];
     for(const f of files){
+      let chunks = null;   // split once per book, and only for a book with marks
       for(const idx of Object.keys(hlTsMap(f))){
         const list = await S.getJSON("hl:"+f.id+":"+idx, null);
         if(!list || !list.length) continue;
         let chapterTitle = "챕터 " + (Number(idx) + 1);
-        const text = await contentFor(f);
-        const chunks = chapterChunks(text, f.title);
+        if(!chunks) chunks = chapterChunks(await contentFor(f), f.title);
         if(chunks[idx]) chapterTitle = chunks[idx].title;
         for(const h of list) out.push({ file: f, chapterIdx: Number(idx), chapterTitle, hl: h });
       }
@@ -3537,20 +3803,19 @@
     $("modalLayer").appendChild(modal);
     $("cancelDelete").addEventListener("click", closeAllOverlays);
     $("confirmDelete").addEventListener("click", async ()=>{
-      pendingDeletes.add(f.id);
+      // recorded before anything else, and kept until a sync has told the
+      // cloud — whenever that is — so the delete can't be lost on the way
+      pendingTombs.ids[f.id] = tombFor(f);
       files = files.filter(x=>x.id!==f.id);
       closeAllOverlays();
       renderAll();
-      await persistFiles();
+      await persistTombs();
+      await persistFiles(400);
       await S.del("file-content:"+f.id);
       await S.del("assets:"+f.id);
-      for(const idx of Object.keys(inkTsMap(f))) await S.del("ink:"+f.id+":"+idx);
+      for(const idx of tombFor(f).ink) await S.del("ink:"+f.id+":"+idx);
       for(const idx of Object.keys(hlTsMap(f))) await S.del("hl:"+f.id+":"+idx);
-      if(fb && fb.currentUser){
-        try{ await deleteFileFromCloud(fb.currentUser.uid, f); }
-        finally{ pendingDeletes.delete(f.id); }
-        syncNow();
-      } else pendingDeletes.delete(f.id);
+      dropCachedContent(f.id);
     });
   }
 
@@ -3629,16 +3894,13 @@
         libView = "browse";
       }
       expandedFolders.delete(folder.id);
-      removedFolders.forEach(fo=> pendingFolderDeletes.add(fo.id));
+      const now = Date.now();
+      removedFolders.forEach(fo=>{ pendingTombs.folders[fo.id] = { ts: fo.updatedTs || now, at: now }; });
       closeAllOverlays();
       renderAll();
+      await persistTombs();
       await persistFiles();
       await persistFolders();
-      if(fb && fb.currentUser){
-        try{ await deleteFoldersFromCloud(fb.currentUser.uid, removedFolders); }
-        finally{ removedFolders.forEach(fo=> pendingFolderDeletes.delete(fo.id)); }
-        syncNow();
-      } else removedFolders.forEach(fo=> pendingFolderDeletes.delete(fo.id));
     });
   }
 
@@ -3654,6 +3916,11 @@
   let editorPreviewOn = false;
   let editorReturnScreen = "library"; // where to go back to: "library" or "reader" (opened editor from mid-read)
   let editorPendingAssets = {}; // filename -> data URL; existing assets when editing, newly attached ones added on top
+  // the body version the editor was opened on: if a sync brings in a newer
+  // one while the editor is open, saving over it would erase that edit
+  let editorOpenedContentTs = 0;
+  let editorSaving = false;
+  let editorPreviewParts = [];  // [{ text, el }] per chapter, so typing re-renders only the chapter typed in
 
   async function openEditor(f){
     closeAllOverlays();
@@ -3664,11 +3931,14 @@
     if(f && body == null){ bodyMissing(f); return; }
     editorReturnScreen = readerScreenVisible() ? "reader" : "library";
     editingFileId = f ? f.id : null;
+    editorOpenedContentTs = f ? fileContentTs(f) : 0;
     editorTitleInput.value = f ? f.title : "";
     editorOriginalTitle = editorTitleInput.value;
     editorTextarea.value = body;
     editorOriginalText = editorTextarea.value;
     editorPendingAssets = f ? (await S.getJSON("assets:"+f.id, {})) : {};
+    editorPreviewParts = [];
+    editorPreviewPane.innerHTML = "";
     editorPreviewOn = false;
     editorTextarea.style.flex = "";
     editorPreviewScroll.style.flex = "";
@@ -3698,11 +3968,26 @@
   // desktop has room to show source and rendered preview side by side —
   // no need to toggle between them there, see the 960px CSS breakpoint
   function isEditorSplitView(){ return window.innerWidth >= 960; }
+  // Every pause in typing used to rebuild the whole book — markdown, math,
+  // code colouring — which made a long book stutter in the side-by-side
+  // view. Each chapter keeps its rendered element for as long as its text
+  // is unchanged, so only the one being typed in is rendered again.
   function renderEditorPreviewContent(){
-    const chapters = splitChapters(editorTextarea.value, editorTitleInput.value.trim() || "제목 없음", editorPendingAssets);
-    editorPreviewPane.innerHTML = chapters.map(c=>c.html).join("");
-    wrapWideTables(editorPreviewPane);
-    editorPreviewPane.querySelectorAll("pre code").forEach(block=>{ try{ hljs.highlightElement(block); }catch(e){} });
+    const chunks = chapterChunks(editorTextarea.value, editorTitleInput.value.trim() || "제목 없음");
+    const byText = new Map();
+    for(const p of editorPreviewParts){
+      if(!byText.has(p.text)) byText.set(p.text, []);
+      byText.get(p.text).push(p);
+    }
+    const next = chunks.map(c=>{
+      const same = byText.get(c.text);
+      if(same && same.length) return same.shift();
+      const el = document.createElement("div");
+      el.innerHTML = renderChapterHtml(c.text, editorPendingAssets);
+      return { text: c.text, el };
+    });
+    editorPreviewPane.replaceChildren(...next.map(p=> p.el));
+    editorPreviewParts = next;
   }
   function insertAtCursor(textarea, text){
     const start = textarea.selectionStart, end = textarea.selectionEnd;
@@ -3750,6 +4035,8 @@
     if(inserts.length){
       const needsLeadingBreak = editorTextarea.value.length && !editorTextarea.value.endsWith("\n");
       insertAtCursor(editorTextarea, (needsLeadingBreak ? "\n" : "") + inserts.join("\n") + "\n");
+      // a chapter that already named this picture renders differently now
+      editorPreviewParts = [];
       scheduleEditorPreviewRefresh();
     }
   }
@@ -3815,57 +4102,148 @@
   }
   editorTextarea.addEventListener("input", scheduleEditorPreviewRefresh);
   editorTitleInput.addEventListener("input", scheduleEditorPreviewRefresh);
+  let editorResizeTimer = null;
   window.addEventListener("resize", ()=>{
-    if(!editorScreen.classList.contains("hidden")) applyEditorPreviewState();
+    clearTimeout(editorResizeTimer);
+    editorResizeTimer = setTimeout(()=>{
+      if(!editorScreen.classList.contains("hidden")) applyEditorPreviewState();
+    }, 150);
   });
   $("editorBackBtn").addEventListener("click", ()=>{
     if(editorIsDirty() && !confirm("저장하지 않은 내용이 있어요. 나가시겠어요?")) return;
     closeEditor();
   });
+  /* Highlights and handwriting are filed under their chapter's position.
+     An edit that added or removed a chapter ahead of them — even one line
+     above the first heading, which creates a "들어가며" chapter — left every
+     mark after it painted onto the wrong chapter. Old chapters are matched
+     to new ones by title, and a chapter renamed in place keeps its slot. */
+  function matchChapters(oldChunks, newChunks){
+    const n = oldChunks.length, m = newChunks.length;
+    const L = Array.from({ length: n + 1 }, ()=> new Array(m + 1).fill(0));
+    for(let i = n - 1; i >= 0; i--){
+      for(let j = m - 1; j >= 0; j--){
+        L[i][j] = oldChunks[i].title === newChunks[j].title ? L[i+1][j+1] + 1 : Math.max(L[i+1][j], L[i][j+1]);
+      }
+    }
+    const map = new Map();   // old index -> new index
+    // chapters between two title matches pair up in order: a renamed one
+    const pairGap = (i0, i1, j0, j1)=>{ for(let k = 0; i0 + k < i1 && j0 + k < j1; k++) map.set(i0 + k, j0 + k); };
+    let i = 0, j = 0, gapI = 0, gapJ = 0;
+    while(i < n && j < m){
+      if(oldChunks[i].title === newChunks[j].title){
+        pairGap(gapI, i, gapJ, j);
+        map.set(i, j);
+        i++; j++; gapI = i; gapJ = j;
+      } else if(L[i+1][j] >= L[i][j+1]) i++;
+      else j++;
+    }
+    pairGap(gapI, n, gapJ, m);
+    return map;
+  }
+  // Moves each chapter's marks to its new position. Every slot that changed
+  // gets a fresh clock, so sync carries the move to the other devices
+  // instead of their old copies coming back. Marks of a chapter that no
+  // longer exists go with it.
+  async function moveChapterMarks(f, map, oldCount){
+    const now = Date.now();
+    for(const kind of ["hl", "ink"]){
+      const tsMap = kind === "hl" ? hlTsMap(f) : inkTsMap(f);
+      const field = kind + "Chapters";
+      const held = new Set([...Object.keys(tsMap).map(Number), ...(f[field] || [])]);
+      const moving = [...held].filter(idx=> idx < oldCount && map.get(idx) !== idx);
+      if(!moving.length) continue;
+      const incoming = new Map();
+      for(const idx of moving){
+        const to = map.get(idx);
+        const list = await S.getJSON(kind + ":" + f.id + ":" + idx, []);
+        if(to !== undefined && Array.isArray(list) && list.length) incoming.set(to, list);
+      }
+      const nextTs = Object.assign({}, tsMap);
+      const chapters = new Set(f[field] || []);
+      // arrivals first, departures after: a write that fails part-way
+      // leaves a mark in two places rather than in none
+      for(const [idx, list] of incoming){
+        await S.put(kind + ":" + f.id + ":" + idx, list);
+        chapters.add(idx); nextTs[idx] = now;
+      }
+      for(const idx of moving){
+        if(incoming.has(idx)) continue;
+        await S.del(kind + ":" + f.id + ":" + idx);
+        chapters.delete(idx); nextTs[idx] = now;
+      }
+      f[kind + "Ts"] = nextTs;
+      f[field] = [...chapters].sort((a, b)=> a - b);
+    }
+  }
+
   async function saveEditorFile(){
+    // a second tap while the first save was still writing made a second copy
+    if(editorSaving) return;
+    editorSaving = true;
+    try{ await saveEditorFileNow(); }
+    finally{ editorSaving = false; }
+  }
+  async function saveEditorFileNow(){
     const title = editorTitleInput.value.trim() || "제목 없음";
     const text = editorTextarea.value;
-    const chapters = splitChapters(text, title, editorPendingAssets);
+    const chapters = chapterChunks(text, title);
     const usedAssets = {};
-    Object.keys(editorPendingAssets).forEach(name=>{ if(text.includes(name)) usedAssets[name] = editorPendingAssets[name]; });
+    Object.keys(editorPendingAssets).forEach(name=>{ if(mdRefersTo(text, name)) usedAssets[name] = editorPendingAssets[name]; });
+    const hasAssets = Object.keys(usedAssets).length > 0;
     const existing = editingFileId ? files.find(x=>x.id===editingFileId) : null;
     const originalVanished = !!editingFileId && !existing;
-    if(existing){
-      {
-        const f = existing;
-        f.title = title;
-        f.chapterCount = chapters.length;
-        f.updatedTs = Date.now();
-        f.contentTs = f.updatedTs;
-        if(f.progress && typeof f.progress.chapterIdx==="number" && f.progress.chapterIdx >= chapters.length){
-          f.progress.chapterIdx = Math.max(0, chapters.length-1);
-        }
-        await S.setText("file-content:"+f.id, text);
-        contentCache.delete(f.id);
-        if(Object.keys(usedAssets).length) await S.setJSON("assets:"+f.id, usedAssets);
-        else await S.del("assets:"+f.id);
-        await persistFiles();
+    // A sync brought in a newer version of this book while the editor was
+    // open. Saving over it would erase that edit on every device without a
+    // word, so this one is kept beside it as a copy instead.
+    const changedElsewhere = !!existing && fileContentTs(existing) !== editorOpenedContentTs;
+    // The text is stored before anything else moves. A write that failed
+    // used to close the editor as though it had worked — the text was gone —
+    // and advance the clock, so sync then sent the old body as the new one.
+    const failed = ()=> toast("저장하지 못했어요 · 기기 저장 공간을 확인해주세요");
+    const now = Date.now();
+    if(existing && !changedElsewhere){
+      const f = existing;
+      try{ await S.put("file-content:"+f.id, text); }catch(e){ failed(); return; }
+      if(hasAssets){ try{ await S.put("assets:"+f.id, usedAssets); }catch(e){} }
+      else await S.del("assets:"+f.id);
+      dropCachedContent(f.id);
+      const oldChunks = chapterChunks(editorOriginalText, editorOriginalTitle.trim() || f.title);
+      const map = matchChapters(oldChunks, chapters);
+      try{ await moveChapterMarks(f, map, oldChunks.length); }catch(e){ console.warn("moving marks failed", e); }
+      if(f.progress && typeof f.progress.chapterIdx === "number"){
+        const to = map.get(f.progress.chapterIdx);
+        let idx = to !== undefined ? to : f.progress.chapterIdx;
+        idx = Math.max(0, Math.min(idx, chapters.length - 1));
+        f.progress.chapterIdx = idx;   // travels with updatedTs, set below
       }
+      f.title = title;
+      f.chapterCount = chapters.length;
+      f.updatedTs = now;
+      f.contentTs = now;
+      await persistFiles();
     } else {
-      // reached either for a genuinely new file or because the one being
-      // edited was deleted underneath us; in the latter case keeping the work
-      // as a new file is the only outcome that doesn't lose it
+      // reached for a genuinely new file, or because the one being edited
+      // was deleted or changed underneath us; keeping the work as a new
+      // file is then the only outcome that loses nothing
       const id = genId();
+      try{ await S.put("file-content:"+id, text); }catch(e){ failed(); return; }
+      if(hasAssets){ try{ await S.put("assets:"+id, usedAssets); }catch(e){} }
       files.push({
-        id, name:title+".md", title,
-        folderId: currentParentId(),
+        id, name: title+".md",
+        title: changedElsewhere ? title + " (사본)" : title,
+        folderId: changedElsewhere ? (existing.folderId || null) : newBookFolderId(),
         chapterCount: chapters.length,
-        createdTs: Date.now(),
-        updatedTs: Date.now(),
-        contentTs: Date.now(),
-        progress: {chapterIdx:0, pct:0, fontSize:18, theme:"light"}
+        createdTs: now,
+        updatedTs: now,
+        contentTs: now,
+        progress: { chapterIdx: 0, pct: 0 }
       });
-      await S.setText("file-content:"+id, text);
-      if(Object.keys(usedAssets).length) await S.setJSON("assets:"+id, usedAssets);
       await persistFiles();
     }
     if(originalVanished) toast("원본이 다른 기기에서 삭제돼서, 새 파일로 저장했어요");
-    const savedId = originalVanished ? null : editingFileId;
+    else if(changedElsewhere) toast("다른 기기에서 이 책이 수정돼서, 사본으로 저장했어요");
+    const savedId = (originalVanished || changedElsewhere) ? null : editingFileId;
     const returnToReader = editorReturnScreen==="reader" && activeFile && savedId && activeFile.id===savedId;
     editorOriginalTitle = editorTitleInput.value;
     editorOriginalText = editorTextarea.value;
@@ -3959,36 +4337,81 @@
     return new Promise((resolve)=>{
       const reader = new FileReader();
       reader.onload = async (e)=>{
-        await libraryReady;
-        const text = e.target.result;
-        const id = genId();
-        const h1 = text.match(/^#\s+(.*)/m);
-        const title = (h1 ? stripInlineMd(h1[1]) : "") || file.name.replace(/\.(md|markdown)$/i,"");
-        const chapters = chapterChunks(text, title); // count-only; images resolved at read time
-        await S.setText("file-content:"+id, text);
-        if(assetMap && Object.keys(assetMap).length){
-          const used = {};
-          Object.keys(assetMap).forEach(name=>{ if(text.includes(name)) used[name] = assetMap[name]; });
-          if(Object.keys(used).length) await S.setJSON("assets:"+id, used);
-        }
-        files.push({
-          id, name:file.name, title,
-          folderId: currentParentId(),
-          chapterCount: chapters.length,
-          createdTs: Date.now(),
-          updatedTs: Date.now(),
-          contentTs: Date.now(),
-          progress: {chapterIdx:0, pct:0, fontSize:18, theme:"light"}
-        });
-        await persistFiles();
-        renderAll();
-        resolve();
+        try{
+          await libraryReady;
+          const text = decodeText(e.target.result);
+          const id = genId();
+          const title = stripInlineMd(firstH1(text)) || file.name.replace(/\.(md|markdown)$/i,"");
+          const chapters = chapterChunks(text, title); // count-only; images resolved at read time
+          // a book whose text could not be stored must not go on the shelf:
+          // it could never be opened, and every sync would fail trying to
+          // upload it
+          try{ await S.put("file-content:"+id, text); }
+          catch(err){ toast("\""+file.name+"\"을 저장하지 못했어요 · 기기 저장 공간을 확인해주세요"); return; }
+          if(assetMap && Object.keys(assetMap).length){
+            const used = {};
+            Object.keys(assetMap).forEach(name=>{ if(mdRefersTo(text, name)) used[name] = assetMap[name]; });
+            if(Object.keys(used).length){ try{ await S.put("assets:"+id, used); }catch(err){} }
+          }
+          const now = Date.now();
+          files.push({
+            id, name:file.name, title,
+            folderId: newBookFolderId(),
+            chapterCount: chapters.length,
+            createdTs: now,
+            updatedTs: now,
+            contentTs: now,
+            // no theme of its own yet, so it opens in the one that suits the
+            // screen (night on a dark one) rather than always a white page
+            progress: {chapterIdx:0, pct:0}
+          });
+          await persistFiles();
+          renderAll();
+        }finally{ resolve(); }
       };
       // without this the promise never settles and every file queued behind
       // this one is dropped too
       reader.onerror = ()=>{ toast("\""+file.name+"\" 파일을 읽지 못했어요"); resolve(); };
-      reader.readAsText(file, "utf-8");
+      reader.readAsArrayBuffer(file);
     });
+  }
+
+  // Notes saved by older Windows tools are often CP949 rather than UTF-8,
+  // and read as UTF-8 every Korean character came out as "�". UTF-8 is
+  // tried strictly first, so a genuine UTF-8 file is never second-guessed.
+  function decodeText(buf){
+    try{ return new TextDecoder("utf-8", { fatal: true }).decode(buf); }
+    catch(e){
+      try{ return new TextDecoder("euc-kr").decode(buf); }
+      catch(e2){ return new TextDecoder("utf-8").decode(buf); }
+    }
+  }
+  // The book's title: its first "# " heading outside a code block. A plain
+  // pattern match also found "# install deps" inside a shell snippet, and
+  // let a lone "#" take the next line as the title.
+  function firstH1(text){
+    let fence = null;
+    for(const line of text.split("\n")){
+      const m = line.match(/^ {0,3}(`{3,}|~{3,})/);
+      if(m){
+        if(!fence) fence = m[1];
+        else if(m[1][0] === fence[0] && m[1].length >= fence.length) fence = null;
+        continue;
+      }
+      if(fence) continue;
+      const h = line.match(/^#[ \t]+(.*\S)/);
+      if(h) return h[1];
+    }
+    return "";
+  }
+  // Whether the markdown names this picture, either as typed or
+  // percent-encoded: Obsidian writes "Pasted image 1.png" as
+  // "Pasted%20image%201.png", and the reader already decodes that when it
+  // looks the picture up — but the picture had been thrown away at upload.
+  function mdRefersTo(text, name){
+    if(text.includes(name)) return true;
+    try{ return text.includes(encodeURI(name)) || text.includes(encodeURIComponent(name)); }
+    catch(e){ return false; }
   }
 
   const dragOverlay = $("dragOverlay");
@@ -4138,7 +4561,18 @@
     let html = marked.parse(safeText);
     html = injectMath(html, store);
     html = applyLocalImages(html, assetMap);
-    return DOMPurify.sanitize(html);
+    const clean = DOMPurify.sanitize(html);
+    // Code colouring ran on the live page at every render, so each return
+    // to a chapter coloured its code again — and a block with no language
+    // named means trying every language. Done here it happens once, and the
+    // result is part of what gets cached. Its output is built from the
+    // block's text and escaped, so it stays as safe as what went in.
+    if(!/<(pre|table)\b/i.test(clean)) return clean;
+    const tpl = document.createElement("template");
+    tpl.innerHTML = clean;
+    wrapWideTables(tpl.content);
+    tpl.content.querySelectorAll("pre code").forEach(block=>{ try{ hljs.highlightElement(block); }catch(e){} });
+    return tpl.innerHTML;
   }
   // Each chapter's HTML is made the first time it is asked for: opening a
   // long book used to parse every chapter before the first could show.
@@ -4174,7 +4608,7 @@
     const f = files.find(x=>x.id===id);
     if(!f) return;
     const text = await S.getText("file-content:"+id);
-    if(text==null){ bodyMissing(f); return; }
+    if(text==null){ pendingSearchTerm = null; bodyMissing(f); return; }
     const assetMap = await S.getJSON("assets:"+id, null);
     activeFile = f;
     activeChapters = splitChapters(text, f.title, assetMap);
@@ -4197,11 +4631,14 @@
     const prog = f.progress || {};
     let frac = typeof prog.frac === "number" ? prog.frac : 0;
     // records written before the position was stored still carry the overall
-    // percentage, which the chapter position can be recovered from
-    if(!frac && typeof prog.pct === "number" && activeChapters.length){
+    // percentage, which the chapter position can be recovered from — only
+    // those: a real frac of 0 (the top of the chapter) was being replaced by
+    // a guess, landing a chapter that fits one screen at its end
+    if(typeof prog.frac !== "number" && typeof prog.pct === "number" && activeChapters.length){
       const derived = prog.pct * activeChapters.length - (prog.chapterIdx || 0);
       if(derived > 0 && derived < 1) frac = derived;
     }
+    readerLastWidth = window.innerWidth;   // resizes while the shelf showed weren't tracked
     // opening a book is not a page turn, so it is not announced as one
     if(typeof targetChapter === "number") renderChapter(targetChapter, true, 0, false);
     else renderChapter(prog.chapterIdx || 0, true, frac, false);
@@ -4225,12 +4662,14 @@
   // gets sized to the wrong height and a restored reading position lands
   // short. Re-apply both once the pictures are actually in — but only if the
   // reader hasn't already moved, so this never yanks the page.
-  function settleChapterMedia(startFrac, settledAt){
-    const pending = Array.from(readInner.querySelectorAll("img")).filter(im=> !im.complete);
-    if(!pending.length) return;
-    let left = pending.length;
+  function settleChapterMedia(imgs, startFrac, settledAt, seq){
+    if(!imgs.length) return;
+    let left = imgs.length;
     const done = ()=>{
       if(--left > 0) return;
+      // turned to another chapter meanwhile: this one's pictures don't
+      // get to move that one's page
+      if(seq !== renderSeq) return;
       resizeInkCanvas();
       if(startFrac && Math.abs(readScroll.scrollTop - settledAt) < 2){
         const max = Math.max(0, readScroll.scrollHeight - readScroll.clientHeight);
@@ -4238,7 +4677,8 @@
       }
       updateProgress();
     };
-    pending.forEach(im=>{
+    imgs.forEach(im=>{
+      if(im.complete){ done(); return; }   // finished while the marks were being read
       im.addEventListener("load", done, { once:true });
       im.addEventListener("error", done, { once:true });
     });
@@ -4320,14 +4760,33 @@
   // the newer chapter's text — so each render checks, after every wait,
   // that it is still the one that matters.
   let renderSeq = 0;
+  let renderedMarksKey = null;   // book:chapter whose marks are in memory
   async function renderChapter(idx, resetScroll, startFrac, announce){
     const seq = ++renderSeq;
     const cameFrom = chapterIdx;
     chapterIdx = Math.max(0, Math.min(idx, activeChapters.length-1));
+    // A different chapter lets go of the last one's marks now, not after
+    // the reads below: in between, the old strokes sat paired with the new
+    // chapter, and an undo or a save in that gap filed them under it.
+    const marksKey = (activeFile ? activeFile.id : "") + ":" + chapterIdx;
+    if(marksKey !== renderedMarksKey){
+      renderedMarksKey = marksKey;
+      highlights = []; inkStrokes = []; inkRedoStack = [];
+      inkDrawing = null; inkActivePointerId = null;
+    }
     readInner.innerHTML = activeChapters[chapterIdx].html;
     wrapWideTables(readInner);
-    readInner.querySelectorAll("pre code").forEach(block=>{ try{ hljs.highlightElement(block); }catch(e){} });
-    const firstHit = pendingSearchTerm ? highlightInChapter(pendingSearchTerm) : null;
+    // gathered before anything waits: a picture that finishes loading during
+    // the reads below would otherwise never be counted, and the correction
+    // its height needs never made
+    const pendingImgs = Array.from(readInner.querySelectorAll("img")).filter(im=> !im.complete);
+    // Taken whether or not it is found. A term matched in the raw markdown
+    // can be missing from the rendered page (inside a link address, a
+    // formula, code split up by colouring), and left waiting it marked the
+    // word on some later page, in some other book.
+    const searchTerm = pendingSearchTerm;
+    pendingSearchTerm = null;
+    const firstHit = searchTerm ? highlightInChapter(searchTerm) : null;
     // The turn is announced here, the instant the new text is in place —
     // not after the awaits below. Run at the end it played *after* the new
     // chapter was already on screen, so the column jumped sideways and slid
@@ -4349,21 +4808,24 @@
     if(firstHit){
       // land on the word that was searched for, not the top of its chapter
       firstHit.scrollIntoView({ block: "center", behavior: "instant" });
-      pendingSearchTerm = null;
     }
     chapterIndicator.textContent = (chapterIdx+1) + " / " + activeChapters.length;
     $("prevBtn").disabled = chapterIdx === 0;
     $("nextBtn").disabled = chapterIdx === activeChapters.length-1;
     Array.from(tocList.children).forEach((el,i)=> el.classList.toggle("active", i===chapterIdx));
     updateProgress();
-    saveProgress();
+    // A saved position still waiting on pictures isn't saved again yet:
+    // measured now, before they have any height, it reads short — and a
+    // chapter that fits one screen without them read as 0%, overwriting
+    // the real place for good.
+    if(!(startFrac && pendingImgs.length)) saveProgress();
     await loadHighlightsForChapter();
     if(seq !== renderSeq) return;
     if(highlights.length) paintHighlights();
     await loadInkForChapter();
     if(seq !== renderSeq) return;
     setupInkCanvas();
-    settleChapterMedia(startFrac, readScroll.scrollTop);
+    settleChapterMedia(pendingImgs, startFrac, readScroll.scrollTop, seq);
   }
 
   /* ---- full-screen image viewer ------------------------------------------
@@ -4499,7 +4961,9 @@
     const el = readScroll;
     const max = el.scrollHeight - el.clientHeight;
     const frac = max > 0 ? el.scrollTop / max : 1;
-    readerLastFrac = max > 0 ? frac : 0;
+    // mid-rotation the reflow can clamp scrollTop and report the chapter's
+    // end; the place to restore is the one from before the width changed
+    if(window.innerWidth === readerLastWidth) readerLastFrac = max > 0 ? frac : 0;
     const overall = (chapterIdx + frac) / activeChapters.length;
     ribbonFill.style.height = Math.min(100, Math.max(2, overall*100)) + "%";
     progressPct.textContent = Math.round(overall*100) + "%";
@@ -4610,13 +5074,19 @@
   let touchX = null, touchY = null, swipeBlocked = false;
   readScroll.addEventListener("touchstart", (e)=>{
     if(penMode) return;
+    // A second finger makes it a pinch, not a swipe. The start was read off
+    // the first finger and the end off whichever lifted first, so pinching
+    // the text apart turned the chapter.
+    if(e.touches.length > 1){ touchX = null; touchY = null; swipeBlocked = true; return; }
     touchX = e.touches[0].clientX;
     touchY = e.touches[0].clientY;
     swipeBlocked = scrollsHorizontally(e.target);
     drawerDragActive = false;
   }, {passive:true});
   readScroll.addEventListener("touchend", (e)=>{
-    if(penMode || touchX===null) return;
+    if(penMode) return;
+    if(e.touches.length > 0) return;   // the gesture isn't over until every finger is up
+    if(touchX===null){ swipeBlocked = false; return; }
     if(swipeBlocked || drawerDragActive){ touchX = null; touchY = null; swipeBlocked = false; return; }
     const dx = e.changedTouches[0].clientX - touchX;
     const dy = e.changedTouches[0].clientY - touchY;
@@ -4888,16 +5358,24 @@
     if((activeFile ? hlKey(activeFile.id, chapterIdx) : null) !== key) return;   // the chapter changed meanwhile
     highlights = Array.isArray(loaded) ? loaded : [];
   }
+  // Marks sync on a slower lane than a book edit. Each stroke ending began
+  // a full upload of the chapter's ink a second and a half later, so steady
+  // writing meant a Firestore round trip about every two seconds. Leaving
+  // the reader or the app sends them at once.
+  const MARKS_SYNC_DELAY = 10000;
+  // Book, chapter and list are all taken before the write waits. A turn
+  // landing during that wait used to move the new chapter's clock instead,
+  // and the chapter actually marked was never sent.
   async function saveHighlights(){
-    if(!activeFile) return;
-    const idx = chapterIdx;
-    await S.setJSON(hlKey(activeFile.id, idx), highlights);
-    const chapters = new Set(activeFile.hlChapters || []);
-    if(highlights.length) chapters.add(idx); else chapters.delete(idx);
-    activeFile.hlChapters = Array.from(chapters).sort((a,b)=>a-b);
-    activeFile.hlTs = Object.assign({}, hlTsMap(activeFile));
-    activeFile.hlTs[idx] = Date.now();
-    await persistFiles();
+    const f = activeFile, idx = chapterIdx, list = highlights;
+    if(!f) return;
+    await S.setJSON(hlKey(f.id, idx), list);
+    const chapters = new Set(f.hlChapters || []);
+    if(list.length) chapters.add(idx); else chapters.delete(idx);
+    f.hlChapters = Array.from(chapters).sort((a,b)=>a-b);
+    f.hlTs = Object.assign({}, hlTsMap(f));
+    f.hlTs[idx] = Date.now();
+    await persistFiles(MARKS_SYNC_DELAY);
   }
 
   function readerBlocks(){
@@ -4964,10 +5442,38 @@
   function paintHighlights(){
     const blocks = readerBlocks();
     for(const h of highlights){
-      const block = blocks[h.block];
-      if(!block) continue;
-      wrapOffsets(block, h.start, h.end, "hl", { hl: h.id, color: h.color });
+      const at = locateHighlight(h, blocks);
+      if(at) wrapOffsets(at.block, at.start, at.end, "hl", { hl: h.id, color: h.color });
     }
+  }
+  // Where a highlight's words are now. It is stored as a block and
+  // character offsets, which any edit above it shifts — fixing a typo
+  // early in a paragraph moved every later highlight onto other words. The
+  // stored words decide: the same place if they are still there, else the
+  // nearest place they appear, else nowhere (still saved and listed, just
+  // not painted onto text it no longer belongs to).
+  function locateHighlight(h, blocks){
+    const here = blocks[h.block];
+    if(!h.text) return here ? { block: here, start: h.start, end: h.end } : null;   // saved before the words were kept
+    if(here && here.textContent.slice(h.start, h.end) === h.text) return { block: here, start: h.start, end: h.end };
+    if(!blocks.length) return null;
+    const nearest = (text, around)=>{
+      let best = -1, bestD = Infinity;
+      for(let i = text.indexOf(h.text); i !== -1; i = text.indexOf(h.text, i + 1)){
+        const d = Math.abs(i - around);
+        if(d < bestD){ best = i; bestD = d; }
+      }
+      return best;
+    };
+    const center = Math.max(0, Math.min(h.block | 0, blocks.length - 1));
+    for(let d = 0; d < blocks.length; d++){
+      for(const bi of d ? [center - d, center + d] : [center]){
+        if(bi < 0 || bi >= blocks.length) continue;
+        const i = nearest(blocks[bi].textContent, bi === h.block ? h.start : 0);
+        if(i !== -1) return { block: blocks[bi], start: i, end: i + h.text.length };
+      }
+    }
+    return null;
   }
 
   /* ---- the little bar that appears over a selection ---- */
@@ -5115,20 +5621,45 @@
     updateInkUndoButtons();
   }
   async function saveInkForChapter(){
-    const key = inkKey();
-    if(!key || !activeFile) return;
-    await S.setJSON(key, inkStrokes);
-    const set = new Set(activeFile.inkChapters || []);
-    if(inkStrokes.length > 0) set.add(chapterIdx); else set.delete(chapterIdx);
-    activeFile.inkChapters = Array.from(set).sort((a,b)=>a-b);
-    activeFile.inkTs = Object.assign({}, inkTsMap(activeFile));
-    activeFile.inkTs[chapterIdx] = Date.now();
-    await persistFiles();
+    // everything read before the wait, as in saveHighlights
+    const f = activeFile, idx = chapterIdx, strokes = inkStrokes;
+    if(!f) return;
+    await S.setJSON("ink:"+f.id+":"+idx, strokes);
+    const set = new Set(f.inkChapters || []);
+    if(strokes.length > 0) set.add(idx); else set.delete(idx);
+    f.inkChapters = Array.from(set).sort((a,b)=>a-b);
+    f.inkTs = Object.assign({}, inkTsMap(f));
+    f.inkTs[idx] = Date.now();
+    await persistFiles(MARKS_SYNC_DELAY);
+  }
+
+  // Marks for the open chapter arrived from another device (see syncNow).
+  // Mid-stroke, the redraw waits for the pen to lift, and the stroke is
+  // then added to what arrived rather than to what was on screen.
+  let marksArrivedMidStroke = false;
+  let inkPressStrokes = [];   // strokes committed during the current pen press
+  async function refreshOpenChapterMarks(){
+    if(!activeFile || !readerScreenVisible()) return;   // opening the book reads them fresh
+    if(inkDrawing){ marksArrivedMidStroke = true; return; }
+    await renderChapter(chapterIdx, false, 0, false);
+  }
+  async function addToArrivedInk(mine){
+    marksArrivedMidStroke = false;
+    const f = activeFile, idx = chapterIdx;
+    if(!f) return;
+    const stored = await S.getJSON("ink:"+f.id+":"+idx, []);
+    if(activeFile !== f || chapterIdx !== idx) return;
+    inkStrokes = (Array.isArray(stored) ? stored : []).concat(mine);
+    await saveInkForChapter();
+    await renderChapter(chapterIdx, false, 0, false);
   }
 
   function setupInkCanvas(){
-    if(inkCanvas) inkCanvas.remove();
-    if(highlightCanvas) highlightCanvas.remove();
+    // A dropped canvas keeps its pixels until it is garbage collected, and
+    // iOS counts every live one against a fixed total: quick page turns
+    // could exhaust it, and drawing then silently stopped working.
+    if(inkCanvas){ inkCanvas.width = inkCanvas.height = 0; inkCanvas.remove(); }
+    if(highlightCanvas){ highlightCanvas.width = highlightCanvas.height = 0; highlightCanvas.remove(); }
     highlightCanvas = document.createElement("canvas");
     highlightCanvas.className = "ink-canvas highlight-layer";
     readInner.appendChild(highlightCanvas);
@@ -5161,8 +5692,13 @@
   let inkWinH = 0;
   const strokeBounds = new WeakMap(); // stroke -> normalized bbox, for culling
 
+  // The chapter's height without the ink surface: the canvases sit inside
+  // readInner, so its scrollHeight counted them. After the text shrank
+  // (smaller type, rotating to landscape) the window then held the page at
+  // its old height — measured off itself — and the screen could go blank
+  // below the real end. offsetHeight comes from the text alone.
   function inkContentSize(){
-    return { w: readInner.clientWidth, h: Math.max(1, readInner.scrollHeight) };
+    return { w: readInner.clientWidth, h: Math.max(1, readInner.offsetHeight) };
   }
 
   function layoutInkWindow(force){
@@ -5266,7 +5802,7 @@
   // rather than to whichever block its first point happened to land in.
   function anchorStroke(stroke, boxes){
     if(!stroke || !stroke.points || !stroke.points.length || stroke.block != null) return;
-    const h = Math.max(1, readInner.scrollHeight);
+    const h = inkContentSize().h;
     boxes = boxes || inkBlockBoxes();
     if(!boxes.length) return;
     let y0 = Infinity, y1 = -Infinity;
@@ -5525,7 +6061,15 @@
     setTimeout(()=>{ readInner.style.transition = ""; }, 220);
   }
   readScroll.addEventListener("touchstart", (e)=>{
-    if(!penMode || e.touches.length < 2) return;
+    if(!penMode) return;
+    // Only fingers count, and not at all while the pen is writing: a palm
+    // resting beside the pen (two contacts, or one where the browser lists
+    // the pen as a touch too) was read as the two-finger gesture, which
+    // threw the stroke away and scrolled the page out from under it.
+    if(inkActiveStylusId !== null || Date.now() - inkLastPenActivityTs < 700) return;
+    let fingers = 0;
+    for(let i = 0; i < e.touches.length; i++) if(e.touches[i].touchType !== "stylus") fingers++;
+    if(fingers < 2) return;
     // A second finger landing mid-stroke means "hand", not "draw": drop the
     // dot or short line the first finger left in the moment before it.
     if(inkDrawing){ inkDrawing = null; inkActivePointerId = null; redrawInk(); }
@@ -5606,6 +6150,7 @@
       const tool = barrelHeld ? "eraser" : inkTool;
       inkActivePointerId = e.pointerId;
       inkDownAt = Date.now();
+      inkPressStrokes = [];
       try{ inkCanvas.setPointerCapture(e.pointerId); }catch(err){}
       const width = strokeWidthFor(e, tool);
       updateInkCursor(e, width, tool);
@@ -5628,7 +6173,12 @@
           // read the hand-off point before anchoring rewrites the committed
           // stroke's coordinates — the new stroke is still chapter-relative
           const lastPt = inkDrawing.points[inkDrawing.points.length-1].slice();
-          if(inkDrawing.points.length>1){ anchorStroke(inkDrawing); inkStrokes.push(inkDrawing); inkRedoStack = []; }
+          if(inkDrawing.points.length>1){
+            anchorStroke(inkDrawing);
+            inkStrokes.push(inkDrawing);
+            inkPressStrokes.push(inkDrawing);   // saved when the pen lifts, however short what follows
+            inkRedoStack = [];
+          }
           inkDrawing = { tool:wantTool, color:inkColor, width:strokeWidthFor(e, wantTool), points:[lastPt] };
         }
       }
@@ -5678,19 +6228,31 @@
       if(!inkDrawing || (e && e.pointerId!==undefined && e.pointerId!==inkActivePointerId)) return;
       const finished = inkDrawing;
       inkDrawing = null;
+      // Strokes committed earlier in this press (a barrel-button switch) are
+      // saved here too. Lifting the pen right after a switch used to leave
+      // them on screen but unsaved, so the erased ink came back later.
+      const committed = inkPressStrokes;
+      inkPressStrokes = [];
       if(finished.points.length>1){
         anchorStroke(finished);
         inkStrokes.push(finished);
+        committed.push(finished);
+      }
+      if(committed.length){
         inkRedoStack = [];
-        saveInkForChapter();
-        updateInkUndoButtons();
-        // the live preview drew plain segments for low-latency feedback;
-        // redraw now so the committed stroke gets the smoothed curve treatment
-        redrawInk();
+        if(marksArrivedMidStroke) addToArrivedInk(committed);
+        else {
+          saveInkForChapter();
+          updateInkUndoButtons();
+          // the live preview drew plain segments for low-latency feedback;
+          // redraw now so the committed stroke gets the smoothed curve treatment
+          redrawInk();
+        }
       }
       // A touch that never moved draws nothing, so it can mean something
       // else: fold the tools away for a clear page, or bring them back.
       else if(e && e.type === "pointerup" && Date.now() - inkDownAt < 350 && !inkPressClosedFlyout) setInkFolded(!inkToolsFolded);
+      if(!committed.length && marksArrivedMidStroke){ marksArrivedMidStroke = false; refreshOpenChapterMarks(); }
       inkActivePointerId = null;
     };
     inkCanvas.addEventListener("pointerup", endStroke);
@@ -5865,7 +6427,8 @@
         toast("필기를 지운 챕터를 벗어나서 되돌릴 수 없어요");
         return;
       }
-      inkStrokes = cleared;
+      // anything written since the clear stays, on top of what comes back
+      inkStrokes = cleared.concat(inkStrokes);
       saveInkForChapter();
       redrawInk();
       updateInkUndoButtons();
@@ -5883,12 +6446,14 @@
     clearTimeout(resizeSettleTimer);
     resizeSettleTimer = setTimeout(()=>{
       if(!readerScreenVisible()) return;
+      // the ink surface first: until it is laid out for the new width it
+      // can still be holding the page at the old height
+      resizeInkCanvas();
       if(window.innerWidth !== readerLastWidth){
         readerLastWidth = window.innerWidth;
         const max = Math.max(0, readScroll.scrollHeight - readScroll.clientHeight);
         readScroll.scrollTo({ top: Math.round(readerLastFrac * max), behavior: "instant" });
       }
-      resizeInkCanvas();
     }, 120);
   });
   // tablet: the TOC panel's width animates (open/close), which reflows how
@@ -5932,18 +6497,28 @@
   function syncBackGuard(){
     let open;
     try{ open = backTargets().length > 0; }catch(e){ return; }   // called before the reader is wired up
+    // Our own history.back() is still on its way. Closing one menu and
+    // opening another in the same moment (rename from the ⋯ menu) used to
+    // push the new sentinel first; the back then landed beneath it, so the
+    // next press left the app. Decided again once that back has landed.
+    if(backGuardSkip) return;
     if(open && !backGuardArmed){
       backGuardArmed = true;
       try{ history.pushState({ ss: 1 }, ""); }catch(e){}
     } else if(!open && backGuardArmed){
       backGuardArmed = false;
-      backGuardSkip = true;
-      try{ history.back(); }catch(e){ backGuardSkip = false; }
+      takeSentinelBack();
     }
+  }
+  function takeSentinelBack(){
+    backGuardSkip = true;
+    try{ history.back(); }catch(e){ backGuardSkip = false; return; }
+    // should its popstate never come, the guard must not stay switched off
+    setTimeout(()=>{ if(backGuardSkip){ backGuardSkip = false; syncBackGuard(); } }, 1500);
   }
 
   window.addEventListener("popstate", ()=>{
-    if(backGuardSkip){ backGuardSkip = false; return; }
+    if(backGuardSkip){ backGuardSkip = false; syncBackGuard(); return; }
     backGuardArmed = false;                       // the sentinel was just consumed
     const targets = backTargets();
     if(!targets.length) return;                   // nothing to close: let the browser leave
@@ -5953,10 +6528,7 @@
 
   // a sentinel left behind by a reload has no state behind it any more —
   // take it off so the first press after a reload is not a dead one
-  if(history.state && history.state.ss){
-    backGuardSkip = true;
-    try{ history.back(); }catch(e){ backGuardSkip = false; }
-  }
+  if(history.state && history.state.ss) takeSentinelBack();
 
   /* ---------------- PWA: service worker registration ---------------- */
   // GitHub Pages serves sw.js with Cache-Control: max-age=600, so a plain
@@ -5965,7 +6537,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "67";
+  const SW_VERSION = "68";
   if("serviceWorker" in navigator){
     // Only offer when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), so controller becomes non-null right
@@ -6016,14 +6588,35 @@
     renderAccount();
     ensureFirebase();
     prepareGis();
-    window.addEventListener("focus", ()=>{ if(fb && fb.currentUser) syncNow(); });
-    document.addEventListener("visibilitychange", ()=>{
+    // Coming back to the app checks in, unless a sync has only just run
+    // and the live listener is up — it already reports every change. On a
+    // laptop each click back into the window was a full sync.
+    const syncOnReturn = ()=>{
       if(!fb || !fb.currentUser) return;
-      if(document.visibilityState === "visible") syncNow();
-      else flushSync();
+      if(unsubLibrary && Date.now() - lastSyncTs < 20000) return;
+      syncNow();
+    };
+    // the reading position waits half a second after scrolling stops; the
+    // app being put away doesn't wait, so it is saved first
+    const flushProgress = ()=>{
+      if(!readScroll._t) return Promise.resolve();
+      clearTimeout(readScroll._t);
+      readScroll._t = null;
+      return saveProgress();
+    };
+    window.addEventListener("focus", syncOnReturn);
+    document.addEventListener("visibilitychange", ()=>{
+      if(document.visibilityState === "visible"){ syncOnReturn(); return; }
+      flushProgress().then(()=>{ if(fb && fb.currentUser) flushSync(); });
     });
-    window.addEventListener("pagehide", flushSync);
-    window.addEventListener("online", ()=>{ syncRetryDelay = 0; if(fb && fb.currentUser) syncNow(); });
+    window.addEventListener("pagehide", ()=>{ flushProgress(); flushSync(); });
+    window.addEventListener("online", ()=>{
+      syncRetryDelay = 0;
+      if(fb && fb.currentUser) syncNow();
+      // Firebase or Google sign-in that failed to load while offline gets
+      // another try now instead of staying broken until the app restarts
+      else if(!fb){ ensureFirebase(); prepareGis(); }
+    });
     window.addEventListener("offline", ()=>{ if(fb && fb.currentUser) setSyncStatus("offline"); });
     // a safety net behind the live listener, not the main path any more
     setInterval(()=>{ if(fb && fb.currentUser) syncNow(); }, 5*60*1000);
