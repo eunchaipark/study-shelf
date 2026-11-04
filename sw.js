@@ -1,8 +1,8 @@
 // 서재 — app-shell service worker.
 // Precaches the shell (HTML/CSS-in-HTML/JS/icons/vendor lib) so the reader still
 // opens offline; book content itself lives in IndexedDB, not here.
-const SHELL_CACHE = "seojae-shell-v66";
-const RUNTIME_CACHE = "seojae-runtime-v66";
+const SHELL_CACHE = "seojae-shell-v67";
+const RUNTIME_CACHE = "seojae-runtime-v67";
 const CURRENT_CACHES = [SHELL_CACHE, RUNTIME_CACHE];
 
 const SHELL_URLS = [
@@ -161,13 +161,24 @@ async function handleNavigation(request) {
   }
 }
 
+// handleNavigation stores whatever it fetches as the app shell, so it must
+// only ever see the app itself. Any other page in scope (md-book-reader.html)
+// used to overwrite the cached shell, and the next offline or slow launch
+// opened that page instead of the library.
+function isAppShellNavigation(url) {
+  const base = new URL("./", self.location.href).pathname;
+  return url.origin === self.location.origin &&
+    (url.pathname === base || url.pathname === base + "index.html");
+}
+
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   if (request.method !== "GET") return;
   const url = new URL(request.url);
 
   if (request.mode === "navigate") {
-    event.respondWith(handleNavigation(request));
+    // other pages go to the network as if there were no worker
+    if (isAppShellNavigation(url)) event.respondWith(handleNavigation(request));
     return;
   }
   if (isGoogleFontRequest(url) || isFirebaseSdkRequest(url)) {

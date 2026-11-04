@@ -1313,10 +1313,18 @@
       tx.onerror = ()=> reject(tx.error);
     }));
   }
-  function idbKeys(){
+  function idbKeys(prefix){
     return openDB().then(db => new Promise((resolve, reject)=>{
-      const req = db.transaction(STORE, "readonly").objectStore(STORE).getAllKeys();
+      const range = prefix ? IDBKeyRange.bound(prefix, prefix + "￿") : undefined;
+      const req = db.transaction(STORE, "readonly").objectStore(STORE).getAllKeys(range);
       req.onsuccess = ()=> resolve(req.result || []);
+      req.onerror = ()=> reject(req.error);
+    }));
+  }
+  function idbCount(key){
+    return openDB().then(db => new Promise((resolve, reject)=>{
+      const req = db.transaction(STORE, "readonly").objectStore(STORE).count(key);
+      req.onsuccess = ()=> resolve(req.result || 0);
       req.onerror = ()=> reject(req.error);
     }));
   }
@@ -1346,9 +1354,13 @@
     },
     async setText(key, val){ try{ await idbSet(key, val); }catch(e){ storageFailed(e); } },
     async del(key){ try{ await idbDel(key); }catch(e){} },
-    // null when the store can't be listed, so a caller can tell "nothing
-    // there" from "couldn't look"
-    async keys(){ try{ return await idbKeys(); }catch(e){ return null; } }
+    // setText/setJSON report a failed write and carry on; put also throws.
+    // A download that could not be stored must not count as received.
+    async put(key, val){ try{ await idbSet(key, val); }catch(e){ storageFailed(e); throw e; } },
+    // keys/has answer null when the store can't be read, so a caller can
+    // tell "not there" from "couldn't look"
+    async keys(prefix){ try{ return await idbKeys(prefix); }catch(e){ return null; } },
+    async has(key){ try{ return (await idbCount(key)) > 0; }catch(e){ return null; } }
   };
   /* A heading is markdown, but a title is a label: the shelf card, the
      reader's top bar, the table of contents and the search results all
@@ -1411,18 +1423,16 @@
     // had succeeded, so the book sat on the shelf, unopenable, and was never
     // fetched again. Nothing is syncing yet at this point, so correcting
     // the clock here can't race a download or an upload.
-    const keys = await S.keys();
-    if(keys){
-      const haveBody = new Set(keys);
+    const bodyKeys = await S.keys("file-content:");
+    if(bodyKeys){
+      const haveBody = new Set(bodyKeys);
       files.forEach(f=>{
         if(fileContentTs(f) > 0 && !haveBody.has("file-content:"+f.id)){ f.contentTs = 0; filesFixed = true; }
       });
     }
-    if(filesFixed) await S.setJSON("app:files", files);
-    if(reconcileFolderTree()){
-      await S.setJSON("app:folders", folders);
-      await S.setJSON("app:files", files);
-    }
+    const reconciled = reconcileFolderTree();
+    if(reconciled) await S.setJSON("app:folders", folders);
+    if(filesFixed || reconciled) await S.setJSON("app:files", files);
   }
   async function persistFolders(){ bumpLibraryRev(); await S.setJSON("app:folders", folders); scheduleSync(); }
   async function persistFiles(syncDelay){ bumpLibraryRev(); await S.setJSON("app:files", files); scheduleSync(syncDelay); }
@@ -1501,6 +1511,11 @@
   // there and pull the just-deleted book straight back.
   const pendingDeletes = new Set();
   const pendingFolderDeletes = new Set();
+  // id -> { claim, at }: a body the library said the cloud had, which this
+  // session found missing and has already published as missing. The same
+  // claim isn't contradicted again until the recheck window passes.
+  const unbackedClaims = new Map();
+  const UNBACKED_RECHECK_MS = 5*60*1000;
 
   let lastAuthError = null; // surfaced in the account rail so sign-in failures aren't silent
 
@@ -1557,6 +1572,16 @@
     lastChunkCount.set(key, parts.length);
   }
 
+  // "The cloud cannot serve this" — as opposed to a network failure. The
+  // library advertised something that isn't there (or isn't all there), so
+  // the honest thing to publish is that the cloud holds nothing, which is
+  // what gets the device that does hold it to upload it again.
+  function cloudMissing(msg){
+    const err = new Error(msg);
+    err.cloudMissing = true;
+    return err;
+  }
+
   async function readChunked(uid, coll, id){
     const { doc, getDoc } = fb.fsMod;
     const snap = await getDoc(doc(fb.db, "users", uid, coll, id));
@@ -1571,7 +1596,7 @@
     const n = d.chunks || 1;
     for(let i=1;i<n;i++){
       const s = await getDoc(doc(fb.db, "users", uid, coll, id+"__"+i));
-      if(!s.exists()) throw new Error("조각 누락: "+coll+"/"+id+"__"+i);
+      if(!s.exists()) throw cloudMissing("조각 누락: "+coll+"/"+id+"__"+i);
       out += s.data().c;
     }
     lastChunkCount.set(coll+"/"+id, n);
@@ -1945,34 +1970,44 @@
   }
 
   /* ---- per-file payload transfer -------------------------------------- */
-  async function pushContentToCloud(uid, f){
+  // The body is labelled with the version the sync decided to send (ts),
+  // not whatever the record says by the time the write happens: an edit
+  // saved mid-upload would otherwise stamp its new version on the old text.
+  async function pushContentToCloud(uid, f, ts){
     const text = await S.getText("file-content:"+f.id);
     // returning quietly here counted as an upload, and the cloud then
     // advertised a body it was never sent
     if(text == null) throw new Error("이 기기에 본문 없음");
-    await writeChunked(uid, "content", f.id, text, { updatedAt: fileContentTs(f) });
+    await writeChunked(uid, "content", f.id, text, { updatedAt: ts });
     // images live in their own IndexedDB entry and used to be left out of
     // sync entirely, so every illustrated book arrived on the second device
     // with its pictures broken
     const assets = await S.getJSON("assets:"+f.id, null);
     if(assets && Object.keys(assets).length){
-      await writeChunked(uid, "assets", f.id, JSON.stringify(assets), { updatedAt: fileContentTs(f) });
+      await writeChunked(uid, "assets", f.id, JSON.stringify(assets), { updatedAt: ts });
     }
   }
-  async function pullContentFromCloud(uid, f){
+  // The library record only *claims* a version; the content document says
+  // which one it really holds. Going by the claim is how a missing body
+  // looked present, and how an older body could arrive wearing a newer
+  // version's timestamp. Returns { ver } — the version actually received —
+  // or { ver, stale } when what the cloud really has is no newer than
+  // ours, in which case ours is kept and nothing is written.
+  async function pullContentFromCloud(uid, f, localTs){
     const got = await readChunked(uid, "content", f.id);
-    if(!got || got.text == null){
-      const err = new Error("클라우드에 본문 없음");
-      err.cloudMissing = true;
-      throw err;
-    }
-    await S.setText("file-content:"+f.id, got.text);
+    if(!got || got.text == null) throw cloudMissing("클라우드에 본문 없음");
+    const ver = typeof got.meta.updatedAt === "number" ? got.meta.updatedAt : null;
+    if(ver != null && ver <= localTs) return { ver, stale: true };
+    await S.put("file-content:"+f.id, got.text);
     // a file may legitimately have no images, so a missing assets doc is
     // not a failure
     const gotAssets = await readChunked(uid, "assets", f.id);
     if(gotAssets && gotAssets.text != null){
-      try{ await S.setJSON("assets:"+f.id, JSON.parse(gotAssets.text)); }catch(e){}
+      let parsed = null;
+      try{ parsed = JSON.parse(gotAssets.text); }catch(e){}
+      if(parsed) await S.put("assets:"+f.id, parsed);
     }
+    return { ver };
   }
   async function pushHlToCloud(uid, f, idx, ts){
     const hl = await S.getJSON("hl:"+f.id+":"+idx, []);
@@ -1980,10 +2015,10 @@
   }
   async function pullHlFromCloud(uid, f, idx){
     const got = await readChunked(uid, "hl", f.id+"_"+idx);
-    if(!got || got.text == null) throw new Error("하이라이트 없음");
+    if(!got || got.text == null) throw cloudMissing("클라우드에 하이라이트 없음");
     let list = [];
     try{ list = JSON.parse(got.text) || []; }catch(e){ list = []; }
-    await S.setJSON("hl:"+f.id+":"+idx, list);
+    await S.put("hl:"+f.id+":"+idx, list);
     return list.length;
   }
   async function pushInkToCloud(uid, f, idx, ts){
@@ -1992,10 +2027,24 @@
   }
   async function pullInkFromCloud(uid, f, idx){
     const got = await readChunked(uid, "ink", f.id+"_"+idx);
-    if(!got || got.text == null) throw new Error("필기 없음");
+    if(!got || got.text == null) throw cloudMissing("클라우드에 필기 없음");
     const strokes = decodeStrokes(got.text);
-    await S.setJSON("ink:"+f.id+":"+idx, strokes);
+    await S.put("ink:"+f.id+":"+idx, strokes);
     return strokes.length;
+  }
+
+  // A book on the shelf whose text isn't on this device. Whatever its clock
+  // said, it now says "nothing here", so the next sync fetches the body.
+  // Only on a definite "not stored" — a failed read could hide a body with
+  // unsynced edits, and resetting the clock would let the cloud overwrite it.
+  async function bodyMissing(f){
+    const signedIn = !!(fb && fb.currentUser);
+    toast(signedIn ? "아직 내려받지 못한 책이에요 · 동기화를 기다려주세요" : "이 책의 본문을 찾을 수 없어요");
+    if(fileContentTs(f) !== 0 && (await S.has("file-content:"+f.id)) === false){
+      f.contentTs = 0;
+      await persistFiles();
+    }
+    if(signedIn) syncNow();
   }
 
   async function deleteFileFromCloud(uid, f){
@@ -2161,23 +2210,50 @@
       // with it — least of all the library write below, whose failure is
       // what used to make the entire library invisible on other devices.
       for(const job of pullContent){
+        const id = job.rec.id;
+        const localTs = job.rec.contentTs || 0;
         try{
-          await pullContentFromCloud(uid, job.rec);
-          job.rec.contentTs = job.ts;
-          if(job.rec.id === openFileId) openContentChanged = true;
+          const got = await pullContentFromCloud(uid, job.rec, localTs);
+          unbackedClaims.delete(id);
+          if(got.stale){
+            // the cloud really holds something no newer than ours: say what
+            // it holds, and send ours in this same pass
+            cloudContentTs[id] = got.ver;
+            if(localTs > got.ver) pushContent.push({ rec: job.rec, ts: localTs });
+            continue;
+          }
+          const ts = got.ver != null ? got.ver : job.ts;
+          job.rec.contentTs = ts;
+          cloudContentTs[id] = ts;
+          if(id === openFileId) openContentChanged = true;
         }catch(e){
-          // The library said the cloud had this body and it doesn't — left
-          // by the clock bug in fileContentTs. Say so in what we publish:
-          // 0 is what makes the device that does hold it upload it again.
-          if(e && e.cloudMissing) cloudContentTs[job.rec.id] = 0;
-          failures++; firstFailure = firstFailure || e; console.warn("content pull failed", job.rec.id, e);
+          if(e && e.cloudMissing){
+            // if the device holding a body is this one, send it now
+            if(localTs > 0){ cloudContentTs[id] = 0; pushContent.push({ rec: job.rec, ts: localTs }); continue; }
+            // Otherwise publish what the cloud really holds — nothing —
+            // which is what makes the device holding it upload it again.
+            // Once per claim, though: a client still on the old code puts
+            // the claim straight back, and correcting it on every pass had
+            // the two rewriting the library at each other. The fetch above
+            // still runs every pass, so a real re-upload is picked up at once.
+            const seen = unbackedClaims.get(id);
+            if(!(seen && seen.claim === job.ts && Date.now() - seen.at < UNBACKED_RECHECK_MS)){
+              unbackedClaims.set(id, { claim: job.ts, at: Date.now() });
+              cloudContentTs[id] = 0;
+            }
+          }
+          failures++; firstFailure = firstFailure || e; console.warn("content pull failed", id, e);
         }
       }
       for(const job of pushContent){
         try{
-          await pushContentToCloud(uid, job.rec);
+          await pushContentToCloud(uid, job.rec, job.ts);
           cloudContentTs[job.rec.id] = job.ts;
-        }catch(e){ failures++; firstFailure = firstFailure || e; console.warn("content push failed", job.rec.id, e); }
+        }catch(e){
+          // deleted while its upload was waiting: nothing went wrong
+          if(!files.some(x=> x.id === job.rec.id)) continue;
+          failures++; firstFailure = firstFailure || e; console.warn("content push failed", job.rec.id, e);
+        }
       }
       for(const job of pullInk){
         try{
@@ -2186,7 +2262,10 @@
           const set = new Set(job.rec.inkChapters || []);
           if(n > 0) set.add(job.idx); else set.delete(job.idx);
           job.rec.inkChapters = Array.from(set).sort((a,b)=>a-b);
-        }catch(e){ failures++; firstFailure = firstFailure || e; console.warn("ink pull failed", job.rec.id, job.idx, e); }
+        }catch(e){
+          if(e && e.cloudMissing && cloudInkTs[job.rec.id]) cloudInkTs[job.rec.id][job.idx] = 0;
+          failures++; firstFailure = firstFailure || e; console.warn("ink pull failed", job.rec.id, job.idx, e);
+        }
       }
       for(const job of pushInk){
         try{
@@ -2201,7 +2280,10 @@
           const set = new Set(job.rec.hlChapters || []);
           if(n > 0) set.add(job.idx); else set.delete(job.idx);
           job.rec.hlChapters = Array.from(set).sort((a,b)=>a-b);
-        }catch(e){ failures++; firstFailure = firstFailure || e; console.warn("highlight pull failed", job.rec.id, job.idx, e); }
+        }catch(e){
+          if(e && e.cloudMissing && cloudHlTs[job.rec.id]) cloudHlTs[job.rec.id][job.idx] = 0;
+          failures++; firstFailure = firstFailure || e; console.warn("highlight pull failed", job.rec.id, job.idx, e);
+        }
       }
       for(const job of pushHl){
         try{
@@ -2276,7 +2358,10 @@
 
       renderAll();
       lastSyncTs = Date.now();
-      syncRetryDelay = 0;
+      // Only a clean pass resets the backoff. Resetting it before every
+      // retry kept a failure that won't clear by itself retrying every five
+      // seconds for as long as the app stayed open.
+      if(!failures) syncRetryDelay = 0;
       setSyncStatus(failures ? "error" : "synced",
         failures ? (friendlySyncError(firstFailure) || (failures+"개 항목 실패")) + " (" + failures + "개)" : null);
       if(failures) scheduleRetry();
@@ -3201,11 +3286,27 @@
     for(const f of data.files){
       const mine = fileById.get(f.id);
       const incomingNewer = !mine || (f.updatedTs||0) > (mine.updatedTs||0);
-      if(!mine){ files.push(Object.assign({}, f)); added++; }
-      else if(incomingNewer){ Object.assign(mine, f); updated++; }
-      if(!mine || incomingNewer){
-        if(data.content && data.content[f.id] != null) await S.setText("file-content:"+f.id, data.content[f.id]);
-        if(data.assets && data.assets[f.id]) await S.setJSON("assets:"+f.id, data.assets[f.id]);
+      // contentTs says which body this device holds, so it has to follow
+      // the body that is actually kept. Copying it across with the rest of
+      // the record could leave a body here labelled "none" (never uploaded
+      // again) or "none" labelled as a body. The body also goes by its own
+      // clock, as in sync: an older backup body never replaces a newer one.
+      const myBodyTs = mine ? fileContentTs(mine) : 0;
+      const body = data.content ? data.content[f.id] : null;
+      const backupBodyTs = fileContentTs(f) || f.updatedTs || 1;
+      let takeBody = body != null && (myBodyTs === 0 || backupBodyTs > myBodyTs);
+      if(takeBody){
+        try{
+          await S.put("file-content:"+f.id, body);
+          if(data.assets && data.assets[f.id]) await S.setJSON("assets:"+f.id, data.assets[f.id]);
+        }catch(e){ takeBody = false; } // not stored, so not claimed
+      }
+      const bodyTs = takeBody ? backupBodyTs : myBodyTs;
+      if(!mine){ files.push(Object.assign({}, f, { contentTs: bodyTs })); added++; }
+      else if(incomingNewer || takeBody){
+        if(incomingNewer) Object.assign(mine, f);
+        mine.contentTs = bodyTs;
+        updated++;
       }
     }
     for(const key of Object.keys(data.ink || {})){
@@ -3556,11 +3657,16 @@
 
   async function openEditor(f){
     closeAllOverlays();
+    // A book whose text hasn't arrived used to open as an empty editor, and
+    // saving it published that emptiness as the newest version — erasing
+    // the book on every device.
+    const body = f ? await S.getText("file-content:"+f.id) : "";
+    if(f && body == null){ bodyMissing(f); return; }
     editorReturnScreen = readerScreenVisible() ? "reader" : "library";
     editingFileId = f ? f.id : null;
     editorTitleInput.value = f ? f.title : "";
     editorOriginalTitle = editorTitleInput.value;
-    editorTextarea.value = f ? (await S.getText("file-content:"+f.id)) || "" : "";
+    editorTextarea.value = body;
     editorOriginalText = editorTextarea.value;
     editorPendingAssets = f ? (await S.getJSON("assets:"+f.id, {})) : {};
     editorPreviewOn = false;
@@ -4068,11 +4174,7 @@
     const f = files.find(x=>x.id===id);
     if(!f) return;
     const text = await S.getText("file-content:"+id);
-    if(text==null){
-      toast(fb && fb.currentUser ? "아직 내려받지 못한 책이에요 · 동기화를 기다려주세요" : "이 책의 본문을 찾을 수 없어요");
-      if(fb && fb.currentUser) syncNow();
-      return;
-    }
+    if(text==null){ bodyMissing(f); return; }
     const assetMap = await S.getJSON("assets:"+id, null);
     activeFile = f;
     activeChapters = splitChapters(text, f.title, assetMap);
@@ -5863,7 +5965,7 @@
   // query string on every deploy (alongside the cache names in sw.js) forces
   // a genuine network fetch every time, since the browser has never cached
   // that exact URL before.
-  const SW_VERSION = "65";
+  const SW_VERSION = "67";
   if("serviceWorker" in navigator){
     // Only offer when an *update* replaces an already-controlling worker.
     // sw.js calls clients.claim(), so controller becomes non-null right
